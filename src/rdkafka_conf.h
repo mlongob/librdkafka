@@ -148,7 +148,7 @@ typedef enum {
 
 /* Increase in steps of 64 as needed.
  * This must be larger than sizeof(rd_kafka_[topic_]conf_t) */
-#define RD_KAFKA_CONF_PROPS_IDX_MAX (64*25)
+#define RD_KAFKA_CONF_PROPS_IDX_MAX (64*26)
 
 /**
  * @struct rd_kafka_anyconf_t
@@ -356,10 +356,18 @@ struct rd_kafka_conf_s {
 	 * Producer configuration
 	 */
         struct {
+                /*
+                 * Idempotence
+                 */
                 int    idempotence;  /**< Enable Idempotent Producer */
                 rd_bool_t gapless;   /**< Raise fatal error if
                                       *   gapless guarantee can't be
                                       *   satisfied. */
+                /*
+                 * Transactions
+                 */
+                char *transactional_id;       /**< Transactional Id */
+                int   transaction_timeout_ms; /**< Transaction timeout */
         } eos;
 	int    queue_buffering_max_msgs;
 	int    queue_buffering_max_kbytes;

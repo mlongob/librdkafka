@@ -474,6 +474,12 @@ static const struct rd_kafka_err_desc rd_kafka_err_descs[] = {
         _ERR_DESC(RD_KAFKA_RESP_ERR__MAX_POLL_EXCEEDED,
                   "Local: Maximum application poll interval "
                   "(max.poll.interval.ms) exceeded"),
+        _ERR_DESC(RD_KAFKA_RESP_ERR__UNKNOWN_BROKER,
+                  "Local: Unknown broker"),
+        _ERR_DESC(RD_KAFKA_RESP_ERR__NOT_CONFIGURED,
+                  "Local: Functionality not configured"),
+        _ERR_DESC(RD_KAFKA_RESP_ERR__FENCED,
+                  "Local: This instance has been fenced by a newer instance"),
 
 	_ERR_DESC(RD_KAFKA_RESP_ERR_UNKNOWN,
 		  "Unknown broker error"),
@@ -505,12 +511,12 @@ static const struct rd_kafka_err_desc rd_kafka_err_descs[] = {
 		  "Broker: Offset metadata string too large"),
 	_ERR_DESC(RD_KAFKA_RESP_ERR_NETWORK_EXCEPTION,
 		  "Broker: Broker disconnected before response received"),
-        _ERR_DESC(RD_KAFKA_RESP_ERR_GROUP_LOAD_IN_PROGRESS,
-		  "Broker: Group coordinator load in progress"),
-        _ERR_DESC(RD_KAFKA_RESP_ERR_GROUP_COORDINATOR_NOT_AVAILABLE,
-		  "Broker: Group coordinator not available"),
+        _ERR_DESC(RD_KAFKA_RESP_ERR_COORDINATOR_LOAD_IN_PROGRESS,
+		  "Broker: Coordinator load in progress"),
+        _ERR_DESC(RD_KAFKA_RESP_ERR_COORDINATOR_NOT_AVAILABLE,
+		  "Broker: Coordinator not available"),
         _ERR_DESC(RD_KAFKA_RESP_ERR_NOT_COORDINATOR_FOR_GROUP,
-		  "Broker: Not coordinator for group"),
+		  "Broker: Not coordinator"),
         _ERR_DESC(RD_KAFKA_RESP_ERR_TOPIC_EXCEPTION,
 		  "Broker: Invalid topic"),
         _ERR_DESC(RD_KAFKA_RESP_ERR_RECORD_LIST_TOO_LARGE,
@@ -1031,6 +1037,9 @@ static void rd_kafka_destroy_internal (rd_kafka_t *rk) {
 
         rd_kafka_dbg(rk, ALL, "DESTROY", "Destroy internal");
 
+        /* Destroy the coordinator cache */
+        rd_kafka_coord_cache_destroy(&rk->rk_coord_cache);
+
         /* Trigger any state-change waiters (which should check the
          * terminate flag whenever they wake up). */
         rd_kafka_brokers_broadcast_state_change(rk);
@@ -1368,7 +1377,7 @@ static void rd_kafka_stats_emit_broker_reqs (struct _stats_emit *st,
                         [RD_KAFKAP_Fetch] = rd_true,
                         [RD_KAFKAP_OffsetCommit] = rd_true,
                         [RD_KAFKAP_OffsetFetch] = rd_true,
-                        [RD_KAFKAP_GroupCoordinator] = rd_true,
+                        [RD_KAFKAP_FindCoordinator] = rd_true,
                         [RD_KAFKAP_JoinGroup] = rd_true,
                         [RD_KAFKAP_Heartbeat] = rd_true,
                         [RD_KAFKAP_LeaveGroup] = rd_true,
@@ -1994,6 +2003,11 @@ rd_kafka_t *rd_kafka_new (rd_kafka_type_t type, rd_kafka_conf_t *app_conf,
 	TAILQ_INIT(&rk->rk_topics);
         rd_kafka_timers_init(&rk->rk_timers, rk);
         rd_kafka_metadata_cache_init(rk);
+        rd_kafka_coord_cache_init(&rk->rk_coord_cache,
+                                  rk->rk_conf.metadata_refresh_interval_ms ?
+                                  rk->rk_conf.metadata_refresh_interval_ms :
+                                  (5 * 60 * 1000) /* 5min */);
+        rd_kafka_coord_reqs_init(rk);
 
 	if (rk->rk_conf.dr_cb || rk->rk_conf.dr_msg_cb)
 		rk->rk_conf.enabled_events |= RD_KAFKA_EVENT_DR;
@@ -2109,7 +2123,10 @@ rd_kafka_t *rd_kafka_new (rd_kafka_type_t type, rd_kafka_conf_t *app_conf,
                                                 rk->rk_group_id,
                                                 rk->rk_client_id);
 
-        rk->rk_eos.transactional_id = rd_kafkap_str_new(NULL, 0);
+        if (type == RD_KAFKA_PRODUCER)
+                rk->rk_eos.transactional_id =
+                        rd_kafkap_str_new(rk->rk_conf.eos.transactional_id,
+                                          -1);
 
 #ifndef _MSC_VER
         /* Block all signals in newly created threads.
@@ -3311,7 +3328,7 @@ rd_kafka_offsets_for_times (rd_kafka_t *rk,
  * @returns RD_KAFKA_OP_RES_HANDLED if op was handled, else one of the
  *          other res types (such as OP_RES_PASS).
  *
- * @locality application thread
+ * @locality any thread that serves op queues
  */
 rd_kafka_op_res_t
 rd_kafka_poll_cb (rd_kafka_t *rk, rd_kafka_q_t *rkq, rd_kafka_op_t *rko,
@@ -3500,6 +3517,12 @@ rd_kafka_poll_cb (rd_kafka_t *rk, rd_kafka_q_t *rkq, rd_kafka_op_t *rko,
                         return RD_KAFKA_OP_RES_PASS; /* Don't handle here */
 
                 /* Op is silently destroyed below */
+                break;
+
+        case RD_KAFKA_OP_TXN:
+                /* Must only be handled by rdkafka main thread */
+                rd_assert(thrd_is_current(rk->rk_thread));
+                res = rd_kafka_op_call(rk, rkq, rko);
                 break;
 
         default:
@@ -3931,7 +3954,11 @@ rd_kafka_resp_err_t rd_kafka_purge (rd_kafka_t *rk, int purge_flags) {
  * @returns a csv string of purge flags in thread-local storage
  */
 const char *rd_kafka_purge_flags2str (int flags) {
-        static const char *names[] = { "queue", "inflight", NULL };
+        static const char *names[] = {
+                "queue",
+                "inflight",
+                "non-blocking"
+        };
         static RD_TLS char ret[64];
 
         return rd_flags2str(ret, sizeof(ret), names, flags);
