@@ -5224,6 +5224,34 @@ rd_kafka_topic_result_error_string (const rd_kafka_topic_result_t *topicres);
 RD_EXPORT const char *
 rd_kafka_topic_result_name (const rd_kafka_topic_result_t *topicres);
 
+/**
+ * @brief Group result provides per-group operation result information.
+ *
+ */
+
+/**
+ * @returns the error code for the given group result.
+ */
+RD_EXPORT rd_kafka_resp_err_t
+rd_kafka_group_result_error (const rd_kafka_group_result_t *groupres);
+
+/**
+ * @returns the human readable error string for the given group result,
+ *          or NULL if there was no error.
+ *
+ * @remark lifetime of the returned string is the same as the \p groupres.
+ */
+RD_EXPORT const char *
+rd_kafka_group_result_error_string (const rd_kafka_group_result_t *groupres);
+
+/**
+ * @returns the name of the group for the given group result.
+ * @remark lifetime of the returned string is the same as the \p groupres.
+ *         
+ */
+RD_EXPORT const char *
+rd_kafka_group_result_name (const rd_kafka_group_result_t *groupres);
+
 
 /**@}*/
 
