@@ -3935,6 +3935,7 @@ int test_get_partition_count (rd_kafka_t *rk, const char *topicname,
         rd_kafka_resp_err_t err;
         rd_kafka_topic_t *rkt;
         int64_t abs_timeout = test_clock() + (timeout_ms * 1000);
+        int ret = -1;
 
         if (!rk)
                 use_rk = test_create_producer();
@@ -3960,8 +3961,8 @@ int test_get_partition_count (rd_kafka_t *rk, const char *topicname,
                                         int32_t cnt;
                                         cnt = metadata->topics[0].partition_cnt;
                                         rd_kafka_metadata_destroy(metadata);
-                                        rd_kafka_topic_destroy(rkt);
-                                        return (int)cnt;
+                                        ret = (int)cnt;
+                                        break;
                                 }
                                 TEST_SAY("metadata(%s) returned %s: retrying\n",
                                          rd_kafka_topic_name(rkt),
@@ -3978,7 +3979,7 @@ int test_get_partition_count (rd_kafka_t *rk, const char *topicname,
         if (!rk)
                 rd_kafka_destroy(use_rk);
 
-        return -1;
+        return ret;
 }
 
 /**
