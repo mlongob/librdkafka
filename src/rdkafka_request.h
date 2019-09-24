@@ -262,6 +262,15 @@ rd_kafka_DescribeConfigsRequest (rd_kafka_broker_t *rkb,
                                  rd_kafka_resp_cb_t *resp_cb,
                                  void *opaque);
 
+rd_kafka_resp_err_t
+rd_kafka_DeleteGroupsRequest (rd_kafka_broker_t *rkb,
+                              const rd_list_t *del_groups /*(DeleteGroup_t*)*/,
+                              rd_kafka_AdminOptions_t *options,
+                              char *errstr, size_t errstr_size,
+                              rd_kafka_replyq_t replyq,
+                              rd_kafka_resp_cb_t *resp_cb,
+                              void *opaque);
+
 void
 rd_kafka_handle_InitProducerId (rd_kafka_t *rk,
                                 rd_kafka_broker_t *rkb,

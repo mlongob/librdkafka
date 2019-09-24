@@ -3402,6 +3402,67 @@ rd_kafka_DescribeConfigsRequest (rd_kafka_broker_t *rkb,
 }
 
 
+/**
+ * @brief Construct and send DeleteGroupsRequest to \p rkb
+ *        with the groups (DeleteGroup_t *) in \p del_groups, using
+ *        \p options.
+ *
+ *        The response (unparsed) will be enqueued on \p replyq
+ *        for handling by \p resp_cb (with \p opaque passed).
+ *
+ * @returns RD_KAFKA_RESP_ERR_NO_ERROR if the request was enqueued for
+ *          transmission, otherwise an error code and errstr will be
+ *          updated with a human readable error string.
+ */
+rd_kafka_resp_err_t
+rd_kafka_DeleteGroupsRequest (rd_kafka_broker_t *rkb,
+                              const rd_list_t *del_groups /*(DeleteGroup_t*)*/,
+                              rd_kafka_AdminOptions_t *options,
+                              char *errstr, size_t errstr_size,
+                              rd_kafka_replyq_t replyq,
+                              rd_kafka_resp_cb_t *resp_cb,
+                              void *opaque) {
+        rd_kafka_buf_t *rkbuf;
+        int16_t ApiVersion = 0;
+        int features;
+        int i = 0;
+        rd_kafka_DeleteGroup_t *delt;
+
+        if (rd_list_cnt(del_groups) == 0) {
+                rd_snprintf(errstr, errstr_size, "No groups to delete");
+                rd_kafka_replyq_destroy(&replyq);
+                return RD_KAFKA_RESP_ERR__INVALID_ARG;
+        }
+
+        ApiVersion = rd_kafka_broker_ApiVersion_supported(
+                rkb, RD_KAFKAP_DeleteGroups, 0, 1, &features);
+        if (ApiVersion == -1) {
+                rd_snprintf(errstr, errstr_size,
+                            "DeleteGroups Admin API (KIP-229) not supported "
+                            "by broker, requires broker version >= 1.1.0");
+                rd_kafka_replyq_destroy(&replyq);
+                return RD_KAFKA_RESP_ERR__UNSUPPORTED_FEATURE;
+        }
+
+        rkbuf = rd_kafka_buf_new_request(rkb, RD_KAFKAP_DeleteGroups, 1,
+                                         4 +
+                                         (rd_list_cnt(del_groups) * 100) +
+                                         4);
+
+        /* #groups */
+        rd_kafka_buf_write_i32(rkbuf, rd_list_cnt(del_groups));
+
+        while ((delt = rd_list_elem(del_groups, i++)))
+                rd_kafka_buf_write_str(rkbuf, delt->group, -1);
+
+        rd_kafka_buf_ApiVersion_set(rkbuf, ApiVersion, 0);
+
+        rd_kafka_broker_buf_enq_replyq(rkb, rkbuf, replyq, resp_cb, opaque);
+
+        return RD_KAFKA_RESP_ERR_NO_ERROR;
+}
+
+
 
 /**
  * @brief Parses and handles an InitProducerId reply.

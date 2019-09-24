@@ -116,6 +116,7 @@ typedef enum {
         RD_KAFKA_OP_CREATEPARTITIONS,/**< Admin: CreatePartitions: u.admin_request*/
         RD_KAFKA_OP_ALTERCONFIGS,    /**< Admin: AlterConfigs: u.admin_request*/
         RD_KAFKA_OP_DESCRIBECONFIGS, /**< Admin: DescribeConfigs: u.admin_request*/
+        RD_KAFKA_OP_DELETEGROUPS,    /**< Admin: DeleteGroups: u.admin_request*/
         RD_KAFKA_OP_ADMIN_RESULT,    /**< Admin API .._result_t */
         RD_KAFKA_OP_PURGE,           /**< Purge queues */
         RD_KAFKA_OP_CONNECT,         /**< Connect (to broker) */

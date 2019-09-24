@@ -97,3 +97,71 @@ void rd_kafka_topic_result_destroy (rd_kafka_topic_result_t *terr) {
 void rd_kafka_topic_result_free (void *ptr) {
         rd_kafka_topic_result_destroy((rd_kafka_topic_result_t *)ptr);
 }
+
+rd_kafka_resp_err_t
+rd_kafka_group_result_error (const rd_kafka_group_result_t *groupres) {
+        return groupres->err;
+}
+
+const char *
+rd_kafka_group_result_error_string (const rd_kafka_group_result_t *groupres) {
+        return groupres->errstr;
+}
+
+const char *
+rd_kafka_group_result_name (const rd_kafka_group_result_t *groupres) {
+        return groupres->group;
+}
+
+/**
+ * @brief Create new group_result (single allocation).
+ *
+ * @param group Group string, if group_size is != -1 it does not have to
+ *              be nul-terminated.
+ * @param group_size Size of group, or -1 to perform automatic strlen()
+ * @param err Error code
+ * @param errstr Optional error string.
+ *
+ * All input arguments are copied.
+ */
+
+rd_kafka_group_result_t *
+rd_kafka_group_result_new (const char *group, ssize_t group_size,
+                           rd_kafka_resp_err_t err,
+                           const char *errstr) {
+        size_t tlen = group_size != -1 ? (size_t)group_size : strlen(group);
+        size_t elen = errstr ? strlen(errstr) + 1 : 0;
+        rd_kafka_group_result_t *terr;
+
+        terr = rd_malloc(sizeof(*terr) + tlen + 1 + elen);
+
+        terr->err = err;
+
+        terr->group = terr->data;
+        memcpy(terr->group, group, tlen);
+        terr->group[tlen] = '\0';
+
+        if (errstr) {
+                terr->errstr = terr->group + tlen + 1;
+                memcpy(terr->errstr, errstr, elen);
+        } else {
+                terr->errstr = NULL;
+        }
+
+        return terr;
+}
+
+
+/**
+ * @brief Destroy group_result
+ */
+void rd_kafka_group_result_destroy (rd_kafka_group_result_t *terr) {
+        rd_free(terr);
+}
+
+/**
+ * @brief Destroy-variant suitable for rd_list free_cb use.
+ */
+void rd_kafka_group_result_free (void *ptr) {
+        rd_kafka_group_result_destroy((rd_kafka_group_result_t *)ptr);
+}

@@ -368,6 +368,20 @@ rd_kafka_admin_result_ret_resources (const rd_kafka_op_t *rko,
                 results.rl_elems;
 }
 
+/**
+ * @brief Return the groups list from a group-related result object.
+ */
+static const rd_kafka_group_result_t **
+rd_kafka_admin_result_ret_groups (const rd_kafka_op_t *rko,
+                                  size_t *cntp) {
+        rd_kafka_op_type_t reqtype =
+                rko->rko_u.admin_result.reqtype & ~RD_KAFKA_OP_FLAGMASK;
+        rd_assert(reqtype == RD_KAFKA_OP_DELETEGROUPS);
+
+        *cntp = rd_list_cnt(&rko->rko_u.admin_result.results);
+        return (const rd_kafka_group_result_t **)rko->rko_u.admin_result.
+                results.rl_elems;
+}
 
 
 
@@ -2733,6 +2747,201 @@ rd_kafka_DescribeConfigs_result_resources (
         size_t *cntp) {
         return rd_kafka_admin_result_ret_resources(
                 (const rd_kafka_op_t *)result, cntp);
+}
+
+/**@}*/
+
+/**
+ * @name Delete groups
+ * @{
+ *
+ *
+ *
+ *
+ */
+
+rd_kafka_DeleteGroup_t *rd_kafka_DeleteGroup_new (const char *group) {
+        size_t tsize = strlen(group) + 1;
+        rd_kafka_DeleteGroup_t *del_group;
+
+        /* Single allocation */
+        del_group = rd_malloc(sizeof(*del_group) + tsize);
+        del_group->group = del_group->data;
+        memcpy(del_group->group, group, tsize);
+
+        return del_group;
+}
+
+void rd_kafka_DeleteGroup_destroy (rd_kafka_DeleteGroup_t *del_group) {
+        rd_free(del_group);
+}
+
+static void rd_kafka_DeleteGroup_free (void *ptr) {
+        rd_kafka_DeleteGroup_destroy(ptr);
+}
+
+
+void rd_kafka_DeleteGroup_destroy_array (rd_kafka_DeleteGroup_t **del_groups,
+                                         size_t del_group_cnt) {
+        size_t i;
+        for (i = 0 ; i < del_group_cnt ; i++)
+                rd_kafka_DeleteGroup_destroy(del_groups[i]);
+}
+
+
+/**
+ * @brief Group name comparator for DeleteGroup_t
+ */
+static int rd_kafka_DeleteGroup_cmp (const void *_a, const void *_b) {
+        const rd_kafka_DeleteGroup_t *a = _a, *b = _b;
+        return strcmp(a->group, b->group);
+}
+
+/**
+ * @brief Allocate a new DeleteGroup and make a copy of \p src
+ */
+static rd_kafka_DeleteGroup_t *
+rd_kafka_DeleteGroup_copy (const rd_kafka_DeleteGroup_t *src) {
+        return rd_kafka_DeleteGroup_new(src->group);
+}
+
+
+/**
+ * @brief Parse DeleteGroupsResponse and create ADMIN_RESULT op.
+ */
+static rd_kafka_resp_err_t
+rd_kafka_DeleteGroupsResponse_parse (rd_kafka_op_t *rko_req,
+                                     rd_kafka_op_t **rko_resultp,
+                                     rd_kafka_buf_t *reply,
+                                     char *errstr, size_t errstr_size) {
+        const int log_decode_errors = LOG_ERR;
+        rd_kafka_resp_err_t err = RD_KAFKA_RESP_ERR_NO_ERROR;
+        rd_kafka_broker_t *rkb = reply->rkbuf_rkb;
+        rd_kafka_t *rk = rkb->rkb_rk;
+        rd_kafka_op_t *rko_result = NULL;
+        int32_t group_cnt;
+        int i;
+        int32_t Throttle_Time;
+
+        rd_kafka_buf_read_i32(reply, &Throttle_Time);
+        rd_kafka_op_throttle_time(rkb, rk->rk_rep, Throttle_Time);
+
+        /* #group_error_codes */
+        rd_kafka_buf_read_i32(reply, &group_cnt);
+
+        if (group_cnt > rd_list_cnt(&rko_req->rko_u.admin_request.args))
+                rd_kafka_buf_parse_fail(
+                        reply,
+                        "Received %"PRId32" groups in response "
+                        "when only %d were requested", group_cnt,
+                        rd_list_cnt(&rko_req->rko_u.admin_request.args));
+
+        rko_result = rd_kafka_admin_result_new(rko_req);
+
+        rd_list_init(&rko_result->rko_u.admin_result.results, group_cnt,
+                     rd_kafka_group_result_free);
+
+        for (i = 0 ; i < (int)group_cnt ; i++) {
+                rd_kafkap_str_t kgroup;
+                int16_t error_code;
+                rd_kafka_group_result_t *terr;
+                rd_kafka_DeleteGroup_t skel;
+                int orig_pos;
+
+                rd_kafka_buf_read_str(reply, &kgroup);
+                rd_kafka_buf_read_i16(reply, &error_code);
+
+                terr = rd_kafka_group_result_new(kgroup.str,
+                                                 RD_KAFKAP_STR_LEN(&kgroup),
+                                                 error_code,
+                                                 error_code ?
+                                                 rd_kafka_err2str(error_code) :
+                                                 NULL);
+
+                /* As a convenience to the application we insert group result
+                 * in the same order as they were requested. The broker
+                 * does not maintain ordering unfortunately. */
+                skel.group = terr->group;
+                orig_pos = rd_list_index(&rko_req->rko_u.admin_request.args,
+                                         &skel, rd_kafka_DeleteGroup_cmp);
+                if (orig_pos == -1) {
+                        rd_kafka_group_result_destroy(terr);
+                        rd_kafka_buf_parse_fail(
+                                reply,
+                                "Broker returned group %.*s that was not "
+                                "included in the original request",
+                                RD_KAFKAP_STR_PR(&kgroup));
+                }
+
+                if (rd_list_elem(&rko_result->rko_u.admin_result.results,
+                                 orig_pos) != NULL) {
+                        rd_kafka_group_result_destroy(terr);
+                        rd_kafka_buf_parse_fail(
+                                reply,
+                                "Broker returned group %.*s multiple times",
+                                RD_KAFKAP_STR_PR(&kgroup));
+                }
+
+                rd_list_set(&rko_result->rko_u.admin_result.results, orig_pos,
+                            terr);
+        }
+
+        *rko_resultp = rko_result;
+
+        return RD_KAFKA_RESP_ERR_NO_ERROR;
+
+ err_parse:
+        if (rko_result)
+                rd_kafka_op_destroy(rko_result);
+
+        rd_snprintf(errstr, errstr_size,
+                    "DeleteGroups response protocol parse failure: %s",
+                    rd_kafka_err2str(err));
+
+        return err;
+}
+
+
+void rd_kafka_DeleteGroups (rd_kafka_t *rk,
+                            rd_kafka_DeleteGroup_t **del_groups,
+                            size_t del_group_cnt,
+                            const rd_kafka_AdminOptions_t *options,
+                            rd_kafka_queue_t *rkqu) {
+        rd_kafka_op_t *rko;
+        size_t i;
+        static const struct rd_kafka_admin_worker_cbs cbs = {
+                rd_kafka_DeleteGroupsRequest,
+                rd_kafka_DeleteGroupsResponse_parse,
+        };
+
+        rko = rd_kafka_admin_request_op_new(rk,
+                                            RD_KAFKA_OP_DELETEGROUPS,
+                                            RD_KAFKA_EVENT_DELETEGROUPS_RESULT,
+                                            &cbs, options, rkqu);
+
+        rd_list_init(&rko->rko_u.admin_request.args, (int)del_group_cnt,
+                     rd_kafka_DeleteGroup_free);
+
+        for (i = 0 ; i < del_group_cnt ; i++)
+                rd_list_add(&rko->rko_u.admin_request.args,
+                            rd_kafka_DeleteGroup_copy(del_groups[i]));
+
+        rd_kafka_q_enq(rk->rk_ops, rko);
+}
+
+
+/**
+ * @brief Get an array of group results from a DeleteGroups result.
+ *
+ * The returned \p groups life-time is the same as the \p result object.
+ * @param cntp is updated to the number of elements in the array.
+ */
+const rd_kafka_group_result_t **
+rd_kafka_DeleteGroups_result_groups (
+        const rd_kafka_DeleteGroups_result_t *result,
+        size_t *cntp) {
+        return rd_kafka_admin_result_ret_groups((const rd_kafka_op_t *)result,
+                                                cntp);
 }
 
 /**@}*/

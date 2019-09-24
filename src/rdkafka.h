@@ -235,6 +235,7 @@ typedef struct rd_kafka_topic_conf_s rd_kafka_topic_conf_t;
 typedef struct rd_kafka_queue_s rd_kafka_queue_t;
 typedef struct rd_kafka_op_s rd_kafka_event_t;
 typedef struct rd_kafka_topic_result_s rd_kafka_topic_result_t;
+typedef struct rd_kafka_group_result_s rd_kafka_group_result_t;
 /* @endcond */
 
 
@@ -4230,6 +4231,7 @@ typedef int rd_kafka_event_type_t;
 #define RD_KAFKA_EVENT_CREATEPARTITIONS_RESULT 102 /**< CreatePartitions_result_t */
 #define RD_KAFKA_EVENT_ALTERCONFIGS_RESULT 103 /**< AlterConfigs_result_t */
 #define RD_KAFKA_EVENT_DESCRIBECONFIGS_RESULT 104 /**< DescribeConfigs_result_t */
+#define RD_KAFKA_EVENT_DELETEGROUPS_RESULT 106 /**< DeleteGroups_result_t */
 #define RD_KAFKA_EVENT_OAUTHBEARER_TOKEN_REFRESH 0x100 /**< SASL/OAUTHBEARER
                                                              token needs to be
                                                              refreshed */
@@ -4378,6 +4380,7 @@ int rd_kafka_event_error_is_fatal (rd_kafka_event_t *rkev);
  *  - RD_KAFKA_EVENT_CREATEPARTITIONS_RESULT
  *  - RD_KAFKA_EVENT_ALTERCONFIGS_RESULT
  *  - RD_KAFKA_EVENT_DESCRIBECONFIGS_RESULT
+ *  - RD_KAFKA_EVENT_DELETEGROUPS_RESULT
  */
 RD_EXPORT
 void *rd_kafka_event_opaque (rd_kafka_event_t *rkev);
@@ -4447,6 +4450,8 @@ typedef rd_kafka_event_t rd_kafka_CreatePartitions_result_t;
 typedef rd_kafka_event_t rd_kafka_AlterConfigs_result_t;
 /*! CreateTopics result type */
 typedef rd_kafka_event_t rd_kafka_DescribeConfigs_result_t;
+/*! DeleteGroups result type */
+typedef rd_kafka_event_t rd_kafka_DeleteGroups_result_t;
 
 /**
  * @brief Get CreateTopics result.
@@ -4507,6 +4512,18 @@ rd_kafka_event_AlterConfigs_result (rd_kafka_event_t *rkev);
  */
 RD_EXPORT const rd_kafka_DescribeConfigs_result_t *
 rd_kafka_event_DescribeConfigs_result (rd_kafka_event_t *rkev);
+
+/**
+ * @brief Get DeleteGroups result.
+ *
+ * @returns the result of a DeleteGroups request, or NULL if event is of
+ *          different type.
+ *
+ * Event types:
+ *   RD_KAFKA_EVENT_DELETEGROUPS_RESULT
+ */
+RD_EXPORT const rd_kafka_DeleteGroups_result_t *
+rd_kafka_event_DeleteGroups_result (rd_kafka_event_t *rkev);
 
 
 
@@ -5262,6 +5279,7 @@ typedef enum rd_kafka_admin_op_t {
         RD_KAFKA_ADMIN_OP_CREATEPARTITIONS, /**< CreatePartitions */
         RD_KAFKA_ADMIN_OP_ALTERCONFIGS,     /**< AlterConfigs */
         RD_KAFKA_ADMIN_OP_DESCRIBECONFIGS,  /**< DescribeConfigs */
+        RD_KAFKA_ADMIN_OP_DELETEGROUPS,     /**< DeleteGroups */
         RD_KAFKA_ADMIN_OP__CNT              /**< Number of ops defined */
 } rd_kafka_admin_op_t;
 
@@ -6121,6 +6139,89 @@ RD_EXPORT const rd_kafka_ConfigResource_t **
 rd_kafka_DescribeConfigs_result_resources (
         const rd_kafka_DescribeConfigs_result_t *result,
         size_t *cntp);
+
+
+
+
+/**
+ * @section DeleteGroups - delete groups from cluster
+ *
+ *
+ */
+
+typedef struct rd_kafka_DeleteGroup_s rd_kafka_DeleteGroup_t;
+
+/**
+ * @brief Create a new DeleteGroup object. This object is later passed to
+ *        rd_kafka_DeleteGroups().
+ *
+ * @param group Group name to delete.
+ *
+ * @returns a new allocated DeleteGroup object.
+ *          Use rd_kafka_DeleteGroup_destroy() to free object when done.
+ */
+RD_EXPORT rd_kafka_DeleteGroup_t *
+rd_kafka_DeleteGroup_new (const char *group);
+
+/**
+ * @brief Destroy and free a DeleteGroup object previously created with
+ *        rd_kafka_DeleteGroup_new()
+ */
+RD_EXPORT void
+rd_kafka_DeleteGroup_destroy (rd_kafka_DeleteGroup_t *del_group);
+
+/**
+ * @brief Helper function to destroy all DeleteGroup objects in
+ *        the \p del_groups array (of \p del_group_cnt elements).
+ *        The array itself is not freed.
+ */
+RD_EXPORT void
+rd_kafka_DeleteGroup_destroy_array (rd_kafka_DeleteGroup_t **del_groups,
+                                    size_t del_group_cnt);
+
+/**
+ * @brief Delete groups from cluster as specified by the \p groups
+ *        array of size \p group_cnt elements.
+ *
+ * @param rk Client instance.
+ * @param del_groups Array of groups to delete.
+ * @param del_group_cnt Number of elements in \p groups array.
+ * @param options Optional admin options, or NULL for defaults.
+ * @param rkqu Queue to emit result on.
+ *
+ * @remark The result event type emitted on the supplied queue is of type
+ *         \c RD_KAFKA_EVENT_DELETEGROUPS_RESULT
+ */
+RD_EXPORT
+void rd_kafka_DeleteGroups (rd_kafka_t *rk,
+                            rd_kafka_DeleteGroup_t **del_groups,
+                            size_t del_group_cnt,
+                            const rd_kafka_AdminOptions_t *options,
+                            rd_kafka_queue_t *rkqu);
+
+
+
+/**
+ * @brief DeleteGroups result type and methods
+ */
+
+/**
+ * @brief Get an array of group results from a DeleteGroups result.
+ *
+ * The returned \p groups life-time is the same as the \p result object.
+ *
+ * @param result Result to get group results from.
+ * @param cntp is updated to the number of elements in the array.
+ */
+RD_EXPORT const rd_kafka_group_result_t **
+rd_kafka_DeleteGroups_result_groups (
+        const rd_kafka_DeleteGroups_result_t *result,
+        size_t *cntp);
+
+
+
+
+
 
 /**@}*/
 

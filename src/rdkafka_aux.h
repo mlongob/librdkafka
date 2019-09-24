@@ -61,4 +61,28 @@ rd_kafka_topic_result_new (const char *topic, ssize_t topic_size,
 
 /**@}*/
 
+/**
+ * @brief Group [ + Error code + Error string ]
+ *
+ * @remark Public type.
+ * @remark Single allocation.
+ */
+struct rd_kafka_group_result_s {
+    char *group;             /**< Points to data */
+    rd_kafka_resp_err_t err; /**< Error code */
+    char *errstr;            /**< Points to data after group, unless NULL */
+    char  data[1];           /**< group followed by errstr */
+};
+
+void rd_kafka_group_result_destroy (rd_kafka_group_result_t *terr);
+void rd_kafka_group_result_free (void *ptr);
+
+rd_kafka_group_result_t *
+rd_kafka_group_result_new (const char *group, ssize_t group_size,
+                           rd_kafka_resp_err_t err,
+                           const char *errstr);
+
+
+/**@}*/
+
 #endif /* _RDKAFKA_AUX_H_ */
