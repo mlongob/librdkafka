@@ -217,7 +217,7 @@ static RD_INLINE int64_t test_clock (void) {
 
 
 typedef struct test_timing_s {
-        char name[256];
+        char name[128];
         int64_t ts_start;
         int64_t duration;
         int64_t ts_every; /* Last every */
@@ -251,7 +251,7 @@ typedef struct test_timing_s {
 
 #else
 #define TIMING_STOP(TIMING) do {                                        \
-        char _str[128];                                                 \
+        char _str[256];                                                 \
         (TIMING)->duration = test_clock() - (TIMING)->ts_start;         \
         rd_snprintf(_str, sizeof(_str), "%s: duration %.3fms\n",        \
                     (TIMING)->name, (float)(TIMING)->duration / 1000.0f); \
