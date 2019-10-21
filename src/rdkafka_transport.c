@@ -69,14 +69,8 @@ RD_TLS rd_kafka_transport_t *rd_kafka_curr_transport;
 static void rd_kafka_transport_close0 (rd_kafka_t *rk, int s) {
         if (rk->rk_conf.closesocket_cb)
                 rk->rk_conf.closesocket_cb(s, rk->rk_conf.opaque);
-        else {
-#ifndef _MSC_VER
-		close(s);
-#else
-		closesocket(s);
-#endif
-        }
-
+        else
+                rd_close(s);
 }
 
 /**
@@ -964,6 +958,7 @@ void rd_kafka_transport_poll_clear(rd_kafka_transport_t *rktrans, int event) {
  */
 int rd_kafka_transport_poll(rd_kafka_transport_t *rktrans, int tmout) {
         int r;
+
 #ifndef _MSC_VER
 	r = poll(rktrans->rktrans_pfd, rktrans->rktrans_pfd_cnt, tmout);
 	if (r <= 0)

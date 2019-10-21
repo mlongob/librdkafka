@@ -288,6 +288,7 @@ rd_kafka_resp_err_t
 rd_kafka_InitProducerIdRequest (rd_kafka_broker_t *rkb,
                                 const char *transactional_id,
                                 int transaction_timeout_ms,
+                                const rd_kafka_pid_t *current_pid,
                                 char *errstr, size_t errstr_size,
                                 rd_kafka_replyq_t replyq,
                                 rd_kafka_resp_cb_t *resp_cb,

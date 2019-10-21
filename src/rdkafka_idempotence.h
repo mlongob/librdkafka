@@ -74,13 +74,38 @@ void rd_kafka_idemp_pid_update (rd_kafka_broker_t *rkb,
                                 const rd_kafka_pid_t pid);
 int rd_kafka_idemp_request_pid (rd_kafka_t *rk, rd_kafka_broker_t *rkb,
                                 const char *reason);
-void rd_kafka_idemp_drain_reset (rd_kafka_t *rk);
+void rd_kafka_idemp_drain_reset (rd_kafka_t *rk, const char *reason);
 void rd_kafka_idemp_drain_epoch_bump (rd_kafka_t *rk, const char *fmt, ...);
 void rd_kafka_idemp_drain_toppar (rd_kafka_toppar_t *rktp, const char *reason);
 void rd_kafka_idemp_inflight_toppar_sub (rd_kafka_t *rk,
                                          rd_kafka_toppar_t *rktp);
 void rd_kafka_idemp_inflight_toppar_add (rd_kafka_t *rk,
                                          rd_kafka_toppar_t *rktp);
+
+
+/**
+ * @brief Call when a fatal idempotence error has occurred, when the producer
+ *        can't continue without risking the idempotency guarantees.
+ *
+ * If the producer is transactional this error is non-fatal and will just
+ * cause the current transaction to transition into the ABORTABLE_ERROR state.
+ * If the producer is not transactional the client instance fatal error
+ * is set and the producer instance is no longer usable.
+ *
+ * @param RK rd_kafka_t instance
+ * @param ERR error to raise
+ * @param ... format string with error message
+ *
+ * @locality any thread
+ * @locks none
+ */
+#define rd_kafka_idemp_set_fatal_error(RK,ERR,...) do {                 \
+                if (rd_kafka_is_transactional(RK))                      \
+                        rd_kafka_txn_set_abortable_error(RK, ERR,       \
+                                                         __VA_ARGS__);  \
+                else                                                    \
+                        rd_kafka_set_fatal_error(RK, ERR, __VA_ARGS__); \
+        } while (0)
 
 void rd_kafka_idemp_start (rd_kafka_t *rk, rd_bool_t immediate);
 void rd_kafka_idemp_init (rd_kafka_t *rk);

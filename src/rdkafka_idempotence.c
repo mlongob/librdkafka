@@ -38,6 +38,13 @@
  * @name Idempotent Producer logic
  *
  *
+ * Unrecoverable idempotent producer errors that could jeopardize the
+ * idempotency guarantees if the producer was to continue operating
+ * are treated as fatal errors, unless the producer is transactional in which
+ * case the current transaction will fail (also known as an abortable error).
+ *
+ *
+ *
  *
  * State machine:
  *
@@ -513,6 +520,9 @@ int rd_kafka_idemp_request_pid (rd_kafka_t *rk, rd_kafka_broker_t *rkb,
                 rk->rk_conf.eos.transactional_id,
                 rd_kafka_is_transactional(rk) ?
                 rk->rk_conf.eos.transaction_timeout_ms : -1,
+                /* FIXME: conditionalize */
+                rd_kafka_pid_valid(rk->rk_eos.pid) ?
+                &rk->rk_eos.pid : NULL,
                 errstr, sizeof(errstr),
                 RD_KAFKA_REPLYQ(rk->rk_ops, 0),
                 rd_kafka_handle_InitProducerId, NULL);
@@ -732,13 +742,14 @@ static RD_INLINE void rd_kafka_idemp_check_drain_done (rd_kafka_t *rk) {
  * @locality any
  * @locks none
  */
-void rd_kafka_idemp_drain_reset (rd_kafka_t *rk) {
+void rd_kafka_idemp_drain_reset (rd_kafka_t *rk, const char *reason) {
         rd_kafka_wrlock(rk);
         rd_kafka_dbg(rk, EOS, "DRAIN",
                      "Beginning partition drain for %s reset "
-                     "for %d partition(s) with in-flight requests",
+                     "for %d partition(s) with in-flight requests: %s",
                      rd_kafka_pid2str(rk->rk_eos.pid),
-                     rd_atomic32_get(&rk->rk_eos.inflight_toppar_cnt));
+                     rd_atomic32_get(&rk->rk_eos.inflight_toppar_cnt),
+                     reason);
         rd_kafka_idemp_set_state(rk, RD_KAFKA_IDEMP_STATE_DRAIN_RESET);
         rd_kafka_wrunlock(rk);
 
@@ -836,10 +847,11 @@ void rd_kafka_idemp_inflight_toppar_add (rd_kafka_t *rk,
 /**
  * @brief Start idempotent producer (asynchronously).
  *
- * @locality application or rdkafka main thread
+ * @locality rdkafka main thread
  * @locks none
  */
 void rd_kafka_idemp_start (rd_kafka_t *rk, rd_bool_t immediate) {
+
         if (rd_kafka_terminating(rk))
                 return;
 

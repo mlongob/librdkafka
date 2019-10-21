@@ -907,7 +907,9 @@ rd_kafka_msgset_writer_write_msgq (rd_kafka_msgset_writer_t *msetw,
          * or we can't guarantee exactly-once delivery.
          * If this check fails we raise a fatal error since
          * it is unrecoverable and most likely caused by a bug
-         * in the client implementation. */
+         * in the client implementation.
+         * This should not be considered an abortable error for
+         * the transactional producer. */
         if (msgcnt > 0 && msetw->msetw_batch->last_msgid) {
                 rd_kafka_msg_t *lastmsg;
 

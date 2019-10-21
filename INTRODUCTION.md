@@ -703,6 +703,14 @@ This method should be called by the application on delivery report error.
 
 ### Transactional Producer
 
+#### FIXME: misc
+
+To make sure messages time out (in case of connectivity problems, etc) within
+the transaction, the `message.timeout.ms` configuration property must be
+set lower than the `transaction.timeout.ms`.
+If `message.timeout.ms` is not explicitly configured it will be adjusted
+automatically.
+
 
 #### Old producer fencing
 
@@ -737,30 +745,41 @@ following pseudo-code:
     rd_kafka_conf_t *cconf = rd_kafka_conf_new();
     rd_kafka_conf_set(cconf, "bootstrap.servers", "mybroker");
     rd_kafka_conf_set(cconf, "group.id", "my-group-id");
+    rd_kafka_conf_set(cconf, "enable.auto.commit", "false");
     rd_kafka_t *consumer = rd_kafka_new(RD_KAFKA_CONSUMER, cconf);
     rd_kafka_poll_set_consumer(consumer);
 
     rd_kafka_subscribe(consumer, "inputTopic");
 
-
     /* Consume-Process-Produce loop */
     while (run) {
-       rd_kafka_message_t *in, *out;
-
-       /* Consume messages */
-       in = rd_kafka_consumer_poll(consumer, -1);
 
        /* Begin transaction */
        rd_kafka_begin_transaction(producer);
 
-       /* Process message, generating an output message */
-       out = process_msg(in);
+       while (some_limiting_factor) {
+           rd_kafka_message_t *in, *out;
 
-       /* Produce output message to output topic */
-       rd_kafka_produce(producer, "outputTopic", out);
+           /* Consume messages */
+           in = rd_kafka_consumer_poll(consumer, -1);
+
+           /* Process message, generating an output message */
+           out = process_msg(in);
+
+           /* Produce output message to output topic */
+           rd_kafka_produce(producer, "outputTopic", out);
+
+           / FIXME: or perhaps */
+           rd_kafka_topic_partition_list_set_from_msg(processed, msg);
+           /* or */
+           rd_kafka_transaction_store_offset_from_msg(producer, msg);
+       }
 
        /* Commit the consumer offset as part of the transaction */
-       rd_kafka_send_offsets_to_transaction(consumer, "my-group-id");
+       rd_kafka_send_offsets_to_transaction(producer,
+                                            "my-group-id",
+                                            rd_kafka_position(consumer));
+                                            /* or processed */
 
        /* Commit the transaction */
        rd_kafka_commit_transaction(producer);
@@ -774,7 +793,7 @@ following pseudo-code:
 **Note**: The above code is a logical representation of transactional
           program flow and does not represent the exact API parameter usage.
           A proper application will perform error handling, etc.
-          See [`examples/rdkafka_txn_demo.cpp`](examples/rdkafka_txn_demo.cpp) for a proper example.
+          See [`examples/transactions.cpp`](examples/transactions.cpp) for a proper example.
 
 
 ## Usage
@@ -849,9 +868,17 @@ Configuration is applied prior to object creation using the
         rd_kafka_conf_destroy(rk);
         fail("Failed to create producer: %s\n", errstr);
     }
-    
+
     /* Note: librdkafka takes ownership of the conf object on success */
 ```
+
+Configuration properties may be set in any order (except for interceptors) and
+may be overwritten before being passed to `rd_kafka_new()`.
+`rd_kafka_new()` will verify that the passed configuration is consistent
+and will fail and return an error if incompatible configuration properties
+are detected. It will also emit log warnings for deprecated and problematic
+configuration properties.
+
 
 ### Termination
 

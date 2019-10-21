@@ -373,10 +373,16 @@ static RD_UNUSED RD_INLINE int rd_kafka_broker_cmp (const void *_a,
  */
 static RD_UNUSED
 int rd_kafka_broker_supports (rd_kafka_broker_t *rkb, int features) {
+        const rd_bool_t do_lock = !thrd_is_current(rkb->rkb_thread);
 	int r;
-	rd_kafka_broker_lock(rkb);
+
+        if (do_lock)
+                rd_kafka_broker_lock(rkb);
+
 	r = (rkb->rkb_features & features) == features;
-	rd_kafka_broker_unlock(rkb);
+
+        if (do_lock)
+                rd_kafka_broker_unlock(rkb);
 	return r;
 }
 

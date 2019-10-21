@@ -39,7 +39,6 @@
 
 
 static void rd_kafka_txn_cancel_op_timeout (rd_kafka_t *rk);
-static void rd_kafka_txn_op_timeout_cb (rd_kafka_timers_t *rkts, void *arg);
 
 
 /**
@@ -226,7 +225,7 @@ void rd_kafka_txn_set_fatal_error (rd_kafka_t *rk,
                      "Fatal transaction error: %s (%s)",
                      errstr, rd_kafka_err2name(err));
 
-        rd_kafka_set_fatal_error(rk, err, "%s", errstr);
+         rd_kafka_set_fatal_error(rk, err, "%s", errstr);
 
         rd_kafka_wrlock(rk);
         rk->rk_eos.txn_err = err;
@@ -242,12 +241,16 @@ void rd_kafka_txn_set_fatal_error (rd_kafka_t *rk,
 /**
  * @brief An abortable/recoverable transactional error has occured.
  *
+ * FIXME: must be callable from any thread (ProduceResponse rdkafka_request.c)
+ *
+ * FIXME: How to raise this error to the application?
+ *
  * @locality rdkafka main thread
  * @locks rd_kafka_wrlock MUST NOT be held
  */
-static void rd_kafka_txn_set_abortable_error (rd_kafka_t *rk,
-                                              rd_kafka_resp_err_t err,
-                                              const char *fmt, ...) {
+void rd_kafka_txn_set_abortable_error (rd_kafka_t *rk,
+                                       rd_kafka_resp_err_t err,
+                                       const char *fmt, ...) {
         char errstr[512];
         va_list ap;
 
@@ -752,6 +755,58 @@ static void rd_kafka_txn_clear_partitions (rd_kafka_t *rk) {
 
 
 /**
+ * @brief Op timeout callback.
+ *
+ * @locality rdkafka main thread
+ * @locks none
+ */
+static void rd_kafka_txn_op_timeout_cb (rd_kafka_timers_t *rkts, void *arg) {
+        rd_kafka_t *rk = arg;
+        rd_kafka_txn_state_t state, new_state;
+        // rd_kafka_op_cb_t *handler;
+
+        rd_assert(rk->rk_eos.txn_curr_op);
+
+        // handler = rk->rk_eos.txn_curr_op->rko_op_cb;
+
+        rd_kafka_rdlock(rk);
+        new_state = state = rk->rk_eos.txn_state;
+        rd_kafka_rdunlock(rk);
+
+        rd_kafka_txn_reply_app(rk, RD_KAFKA_RESP_ERR__TIMED_OUT,
+                               "Operation timed out in state %s",
+                               rd_kafka_txn_state2str(state));
+
+        /* Properly handle the timeout based on what the operation was
+         * (identified by handler), and the current state. */
+
+#if FIXME
+        if (handler == rd_kafka_txn_op_init_transactions) {
+                /* init_transactions() timeout are ignored by the
+                 * internal logic itself:
+                 * the PID acquisition of the PID will continue in the
+                 * background.
+                 * This allows a sub-sequent call to init_transactions()
+                 * to continue the wait for completion. */
+
+
+        } else {
+
+
+        }
+#endif
+
+        if (new_state != state) {
+                rd_kafka_wrlock(rk);
+                rd_kafka_txn_set_state(rk, new_state);
+                rd_kafka_wrunlock(rk);
+        }
+}
+
+
+
+
+/**
  * @brief Cancel the current op timeout timer.
  *
  * @locality rdkafka main thread
@@ -859,6 +914,7 @@ rd_kafka_txn_op_init_transactions (rd_kafka_t *rk,
 
         rd_kafka_txn_set_op_and_timeout(rk, rko, rko->rko_u.txn.timeout_ms);
 
+        /* Start idempotent producer to acquire PID */
         if (do_start)
                 rd_kafka_idemp_start(rk, rd_true/*immediately*/);
 
@@ -1893,55 +1949,6 @@ rd_kafka_abort_transaction (rd_kafka_t *rk,
         return err;
 }
 
-
-
-/**
- * @brief Op timeout callback.
- *
- * @locality rdkafka main thread
- * @locks none
- */
-static void rd_kafka_txn_op_timeout_cb (rd_kafka_timers_t *rkts, void *arg) {
-        rd_kafka_t *rk = arg;
-        rd_kafka_txn_state_t state, new_state;
-        rd_kafka_op_cb_t *handler;
-
-        rd_assert(rk->rk_eos.txn_curr_op);
-
-        handler = rk->rk_eos.txn_curr_op->rko_op_cb;
-
-        rd_kafka_rdlock(rk);
-        new_state = state = rk->rk_eos.txn_state;
-        rd_kafka_rdunlock(rk);
-
-        rd_kafka_txn_reply_app(rk, RD_KAFKA_RESP_ERR__TIMED_OUT,
-                               "Operation timed out in state %s",
-                               rd_kafka_txn_state2str(state));
-
-        /* Properly handle the timeout based on what the operation was
-         * (identified by handler), and the current state. */
-
-        if (handler == rd_kafka_txn_op_init_transactions) {
-                /* init_transactions() timeout are ignored by the
-                 * internal logic itself:
-                 * the PID acquisition of the PID will continue in the
-                 * background.
-                 * This allows a sub-sequent call to init_transactions()
-                 * to continue the wait for completion. */
-
-
-        } else {
-
-
-        }
-
-
-        if (new_state != state) {
-                rd_kafka_wrlock(rk);
-                rd_kafka_txn_set_state(rk, new_state);
-                rd_kafka_wrunlock(rk);
-        }
-}
 
 
 

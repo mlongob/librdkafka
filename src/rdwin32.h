@@ -235,6 +235,7 @@ const char *rd_getenv (const char *env, const char *def) {
  * Sockets, IO
  */
 
+
 /**
  * @brief Set socket to non-blocking
  * @returns 0 on success or -1 on failure (see rd_kafka_socket_errno)

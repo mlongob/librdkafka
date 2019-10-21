@@ -635,11 +635,9 @@ static void do_test_fenced_txn (rd_bool_t produce_after_fence) {
 
 int main_0103_transactions (int argc, char **argv) {
 
-        if (0) {
         do_test_misuse_txn();
         do_test_basic_producer_txn();
         do_test_consumer_producer_txn();
-        }
         do_test_fenced_txn(rd_false /* no produce after fencing */);
         do_test_fenced_txn(rd_true /* produce after fencing */);
 
@@ -704,7 +702,7 @@ static void do_test_txn_local (void) {
 
 int main_0103_transactions_local (int argc, char **argv) {
 
-        if (0)
+        if (1)
                 do_test_txn_local();
 
         return 0;

@@ -2236,7 +2236,7 @@ rd_kafka_handle_idempotent_Produce_error (rd_kafka_broker_t *rkb,
                          * nor give the user a chance to opt out of sending
                          * R2 to R4 which would be retried automatically. */
 
-                        rd_kafka_set_fatal_error(
+                        rd_kafka_idemp_set_fatal_error(
                                 rk, perr->err,
                                 "ProduceRequest for %.*s [%"PRId32"] "
                                 "with %d message(s) failed "
@@ -2315,7 +2315,7 @@ rd_kafka_handle_idempotent_Produce_error (rd_kafka_broker_t *rkb,
                          * this should never happen unless we have
                          * local bug or the broker did not respond
                          * to the requests in order. */
-                        rd_kafka_set_fatal_error(
+                        rd_kafka_idemp_set_fatal_error(
                                 rk, perr->err,
                                 "ProduceRequest for %.*s [%"PRId32"] "
                                 "with %d message(s) failed "
@@ -2390,10 +2390,61 @@ rd_kafka_handle_idempotent_Produce_error (rd_kafka_broker_t *rkb,
                  * If there are outstanding messages not yet acknowledged
                  * then there is no safe way to carry on without risking
                  * duplication or reordering, in which case we fail
-                 * the producer. */
+                 * the producer.
+                 *
+                 * With KIP-360 the UNKNOWN_PRODUCER_ID is always retryable
+                 * (after acquiring a new PID) when using the transactional
+                 * producer.
+                 */
+                /* FIXME: KIP-360 might not be finalized, wait out with this */
+#if FIXME
+                if (rd_kafka_is_transactional(rk) &&
+                    rd_kafka_broker_supports(rkb, RD_KAFKA_FEATURE_KIP360)) {
+                        rd_rkb_dbg(rkb, MSG|RD_KAFKA_DBG_EOS, "UNKPID",
+                                   "ProduceRequest for %.*s [%"PRId32"] "
+                                   "with %d message(s) failed "
+                                   "due to unknown producer id "
+                                   "(%s, base seq %"PRId32", %d retries): "
+                                   "failing the current transaction",
+                                   RD_KAFKAP_STR_PR(rktp->rktp_rkt->rkt_topic),
+                                   rktp->rktp_partition,
+                                   rd_kafka_msgq_len(&batch->msgq),
+                                   rd_kafka_pid2str(batch->pid),
+                                   batch->first_seq,
+                                   firstmsg->rkm_u.producer.retries);
 
-                if (!firstmsg->rkm_u.producer.retries &&
-                    perr->next_err_seq == batch->first_seq) {
+                        rd_kafka_txn_set_abortable_error(
+                                rk,
+                                RD_KAFKA_RESP_ERR_UNKNOWN_PRODUCER_ID,
+                                "ProduceRequest for %.*s [%"PRId32"] "
+                                "with %d message(s) failed "
+                                "due to unknown producer id",
+                                RD_KAFKAP_STR_PR(rktp->rktp_rkt->rkt_topic),
+                                rktp->rktp_partition,
+                                rd_kafka_msgq_len(&batch->msgq));
+
+                        /* Drain outstanding requests and re-request PID */
+                        rd_kafka_idemp_drain_reset(rk, "unknown producer id");
+
+                        /* FIXME: user must call abort_transaction()
+                         *        and then wait for new pid.
+                         *        How do we transition from ABORTABLE_ERROR
+                         *        to WAIT_PID?
+                         *        Maybe pass refresh_pid to set_abortable_err?
+                         */
+
+                        perr->incr_retry = 0;
+                        perr->actions = RD_KAFKA_ERR_ACTION_RETRY;
+                        perr->status  = RD_KAFKA_MSG_STATUS_POSSIBLY_PERSISTED;
+                        perr->update_next_ack = rd_false;
+                        perr->update_next_err = rd_true;
+                        break;
+
+                } else
+#endif
+
+                        if (!firstmsg->rkm_u.producer.retries &&
+                           perr->next_err_seq == batch->first_seq) {
                         rd_rkb_dbg(rkb, MSG|RD_KAFKA_DBG_EOS, "UNKPID",
                                    "ProduceRequest for %.*s [%"PRId32"] "
                                    "with %d message(s) failed "
@@ -2420,7 +2471,7 @@ rd_kafka_handle_idempotent_Produce_error (rd_kafka_broker_t *rkb,
                         break;
                 }
 
-                rd_kafka_set_fatal_error(
+                rd_kafka_idemp_set_fatal_error(
                         rk, perr->err,
                         "ProduceRequest for %.*s [%"PRId32"] "
                         "with %d message(s) failed "
@@ -2713,7 +2764,8 @@ static int rd_kafka_handle_Produce_error (rd_kafka_broker_t *rkb,
                                 batch->first_seq);
 
                         /* Drain outstanding requests and reset PID. */
-                        rd_kafka_idemp_drain_reset(rk);
+                        rd_kafka_idemp_drain_reset(
+                                rk, "fenced by new transactional producer");
 
                 } else if (rk->rk_conf.eos.gapless) {
                         /* A permanent non-idempotent error will lead to
@@ -2721,7 +2773,7 @@ static int rd_kafka_handle_Produce_error (rd_kafka_broker_t *rkb,
                          * will fail with ...ERR_OUT_OF_ORDER_SEQUENCE_NUMBER.
                          * To satisfy the gapless guarantee we need to raise
                          * a fatal error here. */
-                        rd_kafka_set_fatal_error(
+                        rd_kafka_idemp_set_fatal_error(
                                 rk, RD_KAFKA_RESP_ERR__GAPLESS_GUARANTEE,
                                 "ProduceRequest for %.*s [%"PRId32"] "
                                 "with %d message(s) failed: "
@@ -2736,7 +2788,8 @@ static int rd_kafka_handle_Produce_error (rd_kafka_broker_t *rkb,
                                 batch->first_seq);
 
                         /* Drain outstanding requests and reset PID. */
-                        rd_kafka_idemp_drain_reset(rk);
+                        rd_kafka_idemp_drain_reset(
+                                rk, "unable to satisfy gap-less guarantee");
 
                 } else {
                         /* If gapless is not set we bump the Epoch and
@@ -2855,8 +2908,8 @@ rd_kafka_handle_idempotent_Produce_success (rd_kafka_broker_t *rkb,
         /* Must call set_fatal_error() after releasing
          * the toppar lock. */
         if (unlikely(*fatal_err))
-                rd_kafka_set_fatal_error(rk, RD_KAFKA_RESP_ERR__INCONSISTENT,
-                                         "%s", fatal_err);
+                rd_kafka_idemp_set_fatal_error(
+                        rk, RD_KAFKA_RESP_ERR__INCONSISTENT, "%s", fatal_err);
 }
 
 
@@ -3634,8 +3687,10 @@ rd_kafka_handle_InitProducerId (rd_kafka_t *rk,
 /**
  * @brief Construct and send InitProducerIdRequest to \p rkb.
  *
- *        \p transactional_id may be NULL.
- *        \p transaction_timeout_ms may be set to -1.
+ * @param transactional_id may be NULL.
+ * @param transaction_timeout_ms may be set to -1.
+ * @param current_pid may be NULL and will be ignored if KIP360 is not
+ *                    supportedb by the broker.
  *
  *        The response (unparsed) will be handled by \p resp_cb served
  *        by queue \p replyq.
@@ -3648,12 +3703,13 @@ rd_kafka_resp_err_t
 rd_kafka_InitProducerIdRequest (rd_kafka_broker_t *rkb,
                                 const char *transactional_id,
                                 int transaction_timeout_ms,
+                                const rd_kafka_pid_t *current_pid,
                                 char *errstr, size_t errstr_size,
                                 rd_kafka_replyq_t replyq,
                                 rd_kafka_resp_cb_t *resp_cb,
                                 void *opaque) {
         rd_kafka_buf_t *rkbuf;
-        int16_t ApiVersion = 0;
+        int16_t ApiVersion;
 
         ApiVersion = rd_kafka_broker_ApiVersion_supported(
                 rkb, RD_KAFKAP_InitProducerId, 0, 1, NULL);
@@ -3668,13 +3724,22 @@ rd_kafka_InitProducerIdRequest (rd_kafka_broker_t *rkb,
         rkbuf = rd_kafka_buf_new_request(rkb, RD_KAFKAP_InitProducerId, 1,
                                          2 + (transactional_id ?
                                               strlen(transactional_id) : 0) +
-                                         4);
+                                         4 + 8 + 4);
 
         /* transactional_id */
         rd_kafka_buf_write_str(rkbuf, transactional_id, -1);
 
         /* transaction_timeout_ms */
         rd_kafka_buf_write_i32(rkbuf, transaction_timeout_ms);
+
+        if (ApiVersion >= 2) {
+                /* Current PID */
+                rd_kafka_buf_write_i64(rkbuf,
+                                       current_pid ? current_pid->id : -1);
+                /* Current Epoch */
+                rd_kafka_buf_write_i64(rkbuf,
+                                       current_pid ? current_pid->epoch : -1);
+        }
 
         rd_kafka_buf_ApiVersion_set(rkbuf, ApiVersion, 0);
 

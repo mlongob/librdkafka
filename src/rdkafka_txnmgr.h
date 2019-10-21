@@ -139,6 +139,10 @@ void rd_kafka_txn_add_partition (rd_kafka_toppar_t *rktp) {
 void rd_kafka_txn_idemp_state_change (rd_kafka_t *rk,
                                       rd_kafka_idemp_state_t state);
 
+void rd_kafka_txn_set_abortable_error (rd_kafka_t *rk,
+                                       rd_kafka_resp_err_t err,
+                                       const char *fmt, ...);
+
 void rd_kafka_txn_set_fatal_error (rd_kafka_t *rk,
                                    rd_kafka_resp_err_t err,
                                    const char *fmt, ...);
