@@ -35,9 +35,11 @@
  */
 typedef struct rd_kafka_mock_connection_s {
         TAILQ_ENTRY(rd_kafka_mock_connection_s) link;
-        int    s;                /**< Socket */
-        rd_buf_t *rxbuf;         /**< Receive buffer */
-        rd_buf_t *txbuf;         /**< Send buffer */
+        rd_kafka_transport_t *transport; /**< Socket transport */
+        rd_kafka_buf_t *rxbuf;   /**< Receive buffer */
+        rd_kafka_bufq_t outbufs; /**< Send buffers */
+        short *poll_events;      /**< Events to poll, points to
+                                  *   the broker's pfd array */
         struct sockaddr_in peer; /**< Peer address */
         struct rd_kafka_mock_broker_s *broker;
 } rd_kafka_mock_connection_t;
@@ -79,6 +81,7 @@ typedef struct rd_kafka_mock_cluster_s {
 
         thrd_t thread;    /**< Mock thread */
         int ctrl_s[2];    /**< Control socket for terminating the mock thread.
+                           *   [0] is the rdkafka main thread's write socket,
                            *   [1] is the thread's read socket */
 
         rd_bool_t run;    /**< Cluster will run while this value is true */
@@ -87,6 +90,12 @@ typedef struct rd_kafka_mock_cluster_s {
         int                         fd_size;  /**< Allocated size of .fds
                                                *   and .handlers */
         struct pollfd              *fds;      /**< Dynamic array */
+
+        rd_kafka_broker_t *dummy_rkb;  /**< Some internal librdkafka APIs
+                                        *   that we are reusing requires a
+                                        *   broker object, we use the
+                                        *   internal broker and store it
+                                        *   here for convenient access. */
 
         /**< Dynamic array of IO handlers for corresponding fd in .fds */
         struct {
