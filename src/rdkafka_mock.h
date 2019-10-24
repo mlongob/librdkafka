@@ -50,12 +50,42 @@ typedef struct rd_kafka_mock_connection_s {
  */
 typedef struct rd_kafka_mock_broker_s {
         TAILQ_ENTRY(rd_kafka_mock_broker_s) link;
+        int32_t id;
         char    advertised_listener[128];
-        int32_t broker_id;
+        int     port;
 
         int     listen_s;   /**< listen() socket */
 
         TAILQ_HEAD(, rd_kafka_mock_connection_s) connections;
+
+        struct rd_kafka_mock_cluster_s *cluster;
+} rd_kafka_mock_broker_t;
+
+
+/**
+ * @struct Mock partition
+ */
+typedef struct rd_kafka_mock_partition_s {
+        TAILQ_ENTRY(rd_kafka_mock_partition_s) leader_link;
+        int32_t id;
+
+        rd_kafka_mock_broker_t  *leader;
+        rd_kafka_mock_broker_t **replicas;
+        int                      replica_cnt;
+
+        struct rd_kafka_mock_topic_s *topic;
+} rd_kafka_mock_broker_t;
+
+
+/**
+ * @struct Mock topic
+ */
+typedef struct rd_kafka_mock_topic_s {
+        TAILQ_ENTRY(rd_kafka_mock_topic_s) link;
+        char   *name;
+
+        rd_kafka_mock_partition_t *partitions;
+        int     partition_cnt;
 
         struct rd_kafka_mock_cluster_s *cluster;
 } rd_kafka_mock_broker_t;
@@ -74,8 +104,17 @@ typedef void (rd_kafka_mock_io_handler_t) (struct rd_kafka_mock_cluster_s
  * No locking is needed.
  */
 typedef struct rd_kafka_mock_cluster_s {
+        char id[32];  /**< Generated cluster id */
+
         rd_kafka_t *rk;
+
+        int32_t controller_id;  /**< Current controller */
+
         TAILQ_HEAD(, rd_kafka_mock_broker_s) brokers;
+        int broker_cnt;
+
+        TAILQ_HEAD(, rd_kafka_mock_topic_s) topics;
+        int topic_cnt;
 
         char *bootstraps; /**< bootstrap.servers */
 
@@ -96,6 +135,11 @@ typedef struct rd_kafka_mock_cluster_s {
                                         *   broker object, we use the
                                         *   internal broker and store it
                                         *   here for convenient access. */
+
+        struct {
+                int partition_cnt;      /**< Auto topic create part cnt */
+                int replication_factor; /**< Auto topic create repl factor */
+        } defaults;
 
         /**< Dynamic array of IO handlers for corresponding fd in .fds */
         struct {
