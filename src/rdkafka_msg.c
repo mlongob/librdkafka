@@ -67,7 +67,6 @@ rd_kafka_check_produce (rd_kafka_t *rk) {
 
         /* Transactional state forbids producing */
         rd_kafka_set_last_error(RD_KAFKA_RESP_ERR__STATE, ENOEXEC);
-        rd_kafka_dbg(rk, EOS, "CHKPROD", "can't txn state forbids");
 
         return RD_KAFKA_RESP_ERR__STATE;
 }
