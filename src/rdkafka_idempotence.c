@@ -138,7 +138,13 @@ static rd_kafka_broker_t *rd_kafka_idemp_broker_any (rd_kafka_t *rk) {
                 rd_interval(&rk->rk_suppress.no_idemp_brokers,
                             5*60*1000000/*5 minutes*/, 0) > 0;
 
-        if (err_unsupported)
+        if (err_unsupported) {
+                rd_kafka_log(
+                        rk, LOG_ERR, "IDEMPOTENCE",
+                        "Idempotent Producer not supported by "
+                        "any of the %d broker(s) in state UP: "
+                        "requires broker version >= 0.11.0",
+                        up_cnt);
                 rd_kafka_op_err(
                         rk,
                         RD_KAFKA_RESP_ERR__UNSUPPORTED_FEATURE,
@@ -146,7 +152,7 @@ static rd_kafka_broker_t *rd_kafka_idemp_broker_any (rd_kafka_t *rk) {
                         "any of the %d broker(s) in state UP: "
                         "requires broker version >= 0.11.0",
                         up_cnt);
-        else if (up_cnt == 0)
+        } else if (up_cnt == 0)
                 rd_kafka_dbg(rk, EOS, "PIDBROKER",
                              "No brokers available for "
                              "acquiring Producer ID: "
@@ -159,6 +165,7 @@ static rd_kafka_broker_t *rd_kafka_idemp_broker_any (rd_kafka_t *rk) {
                              "requires broker "
                              "version >= 0.11.0",
                              up_cnt, all_cnt);
+
         return NULL;
 }
 
