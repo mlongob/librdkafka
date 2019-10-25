@@ -53,6 +53,7 @@ typedef struct rd_kafka_mock_broker_s {
         int32_t id;
         char    advertised_listener[128];
         int     port;
+        char   *rack;
 
         int     listen_s;   /**< listen() socket */
 
@@ -74,7 +75,7 @@ typedef struct rd_kafka_mock_partition_s {
         int                      replica_cnt;
 
         struct rd_kafka_mock_topic_s *topic;
-} rd_kafka_mock_broker_t;
+} rd_kafka_mock_partition_t;
 
 
 /**
@@ -88,7 +89,7 @@ typedef struct rd_kafka_mock_topic_s {
         int     partition_cnt;
 
         struct rd_kafka_mock_cluster_s *cluster;
-} rd_kafka_mock_broker_t;
+} rd_kafka_mock_topic_t;
 
 
 typedef void (rd_kafka_mock_io_handler_t) (struct rd_kafka_mock_cluster_s
@@ -120,8 +121,10 @@ typedef struct rd_kafka_mock_cluster_s {
 
         thrd_t thread;    /**< Mock thread */
         int ctrl_s[2];    /**< Control socket for terminating the mock thread.
-                           *   [0] is the rdkafka main thread's write socket,
-                           *   [1] is the thread's read socket */
+                           *   [0] is the thread's read socket,
+                           *   [1] is the rdkafka main thread's write socket.
+                           */
+
 
         rd_bool_t run;    /**< Cluster will run while this value is true */
 
@@ -150,6 +153,8 @@ typedef struct rd_kafka_mock_cluster_s {
 
 
 
+void rd_kafka_mock_broker_set_rack (rd_kafka_mock_cluster_t *mcluster,
+                                    int32_t broker_id, const char *rack);
 void rd_kafka_mock_cluster_destroy (rd_kafka_mock_cluster_t *mcluster);
 rd_kafka_mock_cluster_t *rd_kafka_mock_cluster_new (rd_kafka_t *rk,
                                                     int broker_cnt);
