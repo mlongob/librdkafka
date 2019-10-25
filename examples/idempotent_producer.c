@@ -177,6 +177,10 @@ int main (int argc, char **argv) {
          */
         conf = rd_kafka_conf_new();
 
+        rd_kafka_conf_set(conf, "test.mock.num.brokers", "3", NULL, 0);
+        rd_kafka_conf_set(conf, "transactional.id", "gooseGreen", NULL, 0);
+        rd_kafka_conf_set(conf, "debug", "protocol,mock,eos", NULL, 0);
+
         /* Set bootstrap broker(s) as a comma-separated list of
          * host or host:port (default port 9092).
          * librdkafka will use the bootstrap brokers to acquire the full
@@ -227,6 +231,19 @@ int main (int argc, char **argv) {
 
         /* Signal handler for clean shutdown */
         signal(SIGINT, stop);
+
+
+        if (rd_kafka_init_transactions(rk, 5000, errstr, sizeof(errstr))) {
+                fprintf(stderr, "%% init_transactions failed: %s\n",
+                        errstr);
+                return 1;
+        }
+
+        if (rd_kafka_begin_transaction(rk, errstr, sizeof(errstr))) {
+                fprintf(stderr, "%% begin_transactions failed: %s\n",
+                        errstr);
+                return 1;
+        }
 
         fprintf(stderr, "%% Running producer loop. Press Ctrl-C to exit\n");
 
@@ -309,7 +326,7 @@ int main (int argc, char **argv) {
                 /* Since fatal errors can't be triggered in practice,
                  * use the test API to trigger a fabricated error after
                  * some time. */
-                if (msgcnt == 13)
+                if (0 && msgcnt == 13)
                         rd_kafka_test_fatal_error(
                                 rk,
                                 RD_KAFKA_RESP_ERR_OUT_OF_ORDER_SEQUENCE_NUMBER,
@@ -320,6 +337,13 @@ int main (int argc, char **argv) {
                  * A real application should not do this. */
                 usleep(500 * 1000); /* 500ms */
         }
+
+        if (rd_kafka_commit_transaction(rk, errstr, sizeof(errstr))) {
+                fprintf(stderr, "%% commit_transactions failed: %s\n",
+                        errstr);
+                return 1;
+        }
+
 
 
         /* Wait for final messages to be delivered or fail.
