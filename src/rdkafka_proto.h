@@ -245,7 +245,12 @@ typedef struct rd_kafkap_str_s {
 #define RD_KAFKAP_STR_SIZE(kstr) RD_KAFKAP_STR_SIZE0((kstr)->len)
 
 
-/* Serialized Kafka string: only works for _new() kstrs */
+/** @returns true if kstr is pre-serialized through .._new() */
+#define RD_KAFKAP_STR_IS_SERIALIZED(kstr)                               \
+        ((const void *)((kstr)+1) == (const void *)((kstr)->str))
+
+/* Serialized Kafka string: only works for _new() kstrs.
+ * Check with RD_KAFKAP_STR_IS_SERIALIZED */
 #define RD_KAFKAP_STR_SER(kstr)  ((kstr)+1)
 
 /* Macro suitable for "%.*s" printing. */

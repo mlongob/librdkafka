@@ -893,9 +893,19 @@ rd_kafka_buf_write_varint (rd_kafka_buf_t *rkbuf, int64_t v) {
  */
 static RD_INLINE size_t rd_kafka_buf_write_kstr (rd_kafka_buf_t *rkbuf,
                                                 const rd_kafkap_str_t *kstr) {
-        return rd_kafka_buf_write(rkbuf, RD_KAFKAP_STR_SER(kstr),
-				  RD_KAFKAP_STR_SIZE(kstr));
+        size_t len;
+
+        if (RD_KAFKAP_STR_IS_SERIALIZED(kstr))
+                return rd_kafka_buf_write(rkbuf, RD_KAFKAP_STR_SER(kstr),
+                                          RD_KAFKAP_STR_SIZE(kstr));
+
+        len = RD_KAFKAP_STR_LEN(kstr);
+        rd_kafka_buf_write_i16(rkbuf, len);
+        rd_kafka_buf_write(rkbuf, kstr->str, len);
+
+        return 2 + len;
 }
+
 
 /**
  * Write (copy) char * string to buffer.
