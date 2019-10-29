@@ -35,7 +35,7 @@
 #include "rdbuf.h"
 #include "rdrand.h"
 #include "rdkafka_interceptor.h"
-#include "rdkafka_mock.h"
+#include "rdkafka_mock_int.h"
 #include "rdkafka_transport_int.h"
 
 
@@ -56,7 +56,7 @@ rd_kafka_mock_broker_find (const rd_kafka_mock_cluster_t *mcluster,
 /**
  * @returns the coordinator for KeyType,Key (e.g., GROUP,mygroup).
  */
-static rd_kafka_mock_broker_t *
+rd_kafka_mock_broker_t *
 rd_kafka_mock_cluster_get_coord (rd_kafka_mock_cluster_t *mcluster,
                                  rd_kafka_coordtype_t KeyType,
                                  const rd_kafkap_str_t *Key) {
@@ -119,6 +119,15 @@ static void rd_kafka_mock_partition_init (rd_kafka_mock_topic_t *mtopic,
         rd_kafka_mock_partition_assign_replicas(mpart);
 }
 
+rd_kafka_mock_partition_t *
+rd_kafka_mock_partition_find (const rd_kafka_mock_topic_t *mtopic,
+                              int32_t partition) {
+        if (partition < 0 || partition >= mtopic->partition_cnt)
+                return NULL;
+
+        return (rd_kafka_mock_partition_t *)&mtopic->partitions[partition];
+}
+
 
 static void rd_kafka_mock_topic_destroy (rd_kafka_mock_topic_t *mtopic) {
         int i;
@@ -160,13 +169,29 @@ rd_kafka_mock_topic_new (rd_kafka_mock_cluster_t *mcluster, const char *topic,
 }
 
 
-static rd_kafka_mock_topic_t *
+rd_kafka_mock_topic_t *
 rd_kafka_mock_topic_find (const rd_kafka_mock_cluster_t *mcluster,
                           const char *name) {
         const rd_kafka_mock_topic_t *mtopic;
 
         TAILQ_FOREACH(mtopic, &mcluster->topics, link) {
                 if (!strcmp(mtopic->name, name))
+                        return (rd_kafka_mock_topic_t *)mtopic;
+        }
+
+        return NULL;
+}
+
+
+rd_kafka_mock_topic_t *
+rd_kafka_mock_topic_find_by_kstr (const rd_kafka_mock_cluster_t *mcluster,
+                                  const rd_kafkap_str_t *kname) {
+        const rd_kafka_mock_topic_t *mtopic;
+
+        TAILQ_FOREACH(mtopic, &mcluster->topics, link) {
+                if (!strncmp(mtopic->name, kname->str,
+                             RD_KAFKAP_STR_LEN(kname)) &&
+                    mtopic->name[RD_KAFKAP_STR_LEN(kname)] == '\0')
                         return (rd_kafka_mock_topic_t *)mtopic;
         }
 
@@ -180,22 +205,16 @@ rd_kafka_mock_topic_find (const rd_kafka_mock_cluster_t *mcluster,
  * @param errp will be set to an error code that is consistent with
  *             new topics on real clusters.
  */
-static rd_kafka_mock_topic_t *
+rd_kafka_mock_topic_t *
 rd_kafka_mock_topic_auto_create (rd_kafka_mock_cluster_t *mcluster,
                                  const char *topic,
                                  rd_kafka_resp_err_t *errp) {
-        *errp = RD_KAFKA_RESP_ERR_LEADER_NOT_AVAILABLE;
+        *errp = 0; // FIXME? RD_KAFKA_RESP_ERR_LEADER_NOT_AVAILABLE;
         return rd_kafka_mock_topic_new(mcluster, topic,
                                          mcluster->defaults.partition_cnt,
                                          mcluster->defaults.replication_factor);
 }
 
-
-static void rd_kafka_mock_pid_generate (rd_kafka_mock_cluster_t *mcluster,
-                                        rd_kafka_pid_t *pid) {
-        pid->id = rd_jitter(1, 900000) * 1000;
-        pid->epoch = 0;
-}
 
 
 static void rd_kafka_mock_cluster_io_del (rd_kafka_mock_cluster_t *mcluster,
@@ -208,11 +227,11 @@ static void rd_kafka_mock_cluster_io_del (rd_kafka_mock_cluster_t *mcluster,
                                 memmove(&mcluster->fds[i],
                                         &mcluster->fds[i+1],
                                         sizeof(*mcluster->fds) *
-                                        mcluster->fd_cnt - i);
+                                        (mcluster->fd_cnt - i));
                                 memmove(&mcluster->handlers[i],
                                         &mcluster->handlers[i+1],
                                         sizeof(*mcluster->handlers) *
-                                        mcluster->fd_cnt - i);
+                                        (mcluster->fd_cnt - i));
                         }
 
                         mcluster->fd_cnt--;
@@ -280,10 +299,9 @@ static void rd_kafka_mock_connection_close (rd_kafka_mock_connection_t *mconn,
 }
 
 
-static void
-rd_kafka_mock_connection_send_response (rd_kafka_mock_connection_t *mconn,
-                                        const rd_kafka_buf_t *request,
-                                        rd_kafka_buf_t *resp) {
+void rd_kafka_mock_connection_send_response (rd_kafka_mock_connection_t *mconn,
+                                             const rd_kafka_buf_t *request,
+                                             rd_kafka_buf_t *resp) {
 
         resp->rkbuf_reshdr.Size = rd_buf_write_pos(&resp->rkbuf_buf) - 4;
 
@@ -432,8 +450,7 @@ rd_kafka_mock_connection_read_request (rd_kafka_mock_connection_t *mconn,
         return -1;
 }
 
-static rd_kafka_buf_t *
-rd_kafka_mock_buf_new_response (const rd_kafka_buf_t *request) {
+rd_kafka_buf_t *rd_kafka_mock_buf_new_response (const rd_kafka_buf_t *request) {
         rd_kafka_buf_t *rkbuf = rd_kafka_buf_new(1, 100);
 
         /* Size, updated later */
@@ -447,385 +464,6 @@ rd_kafka_mock_buf_new_response (const rd_kafka_buf_t *request) {
 
 
 
-static int rd_kafka_mock_handle_ApiVersion (rd_kafka_mock_connection_t *mconn,
-                                            rd_kafka_buf_t *rkbuf);
-
-
-/**
- * @brief Write a MetadataResponse.Topics. entry to \p resp.
- *
- * @param mtopic may be NULL
- */
-static void
-rd_kafka_mock_buf_write_Metadata_Topic (rd_kafka_buf_t *resp,
-                                        int16_t ApiVersion,
-                                        const char *topic,
-                                        const rd_kafka_mock_topic_t *mtopic,
-                                        rd_kafka_resp_err_t err) {
-        int i;
-
-        /* Response: Topics.ErrorCode */
-        rd_kafka_buf_write_i16(resp, err);
-        /* Response: Topics.Name */
-        rd_kafka_buf_write_str(resp, topic, -1);
-        /* Response: Topics.IsInternal */
-        rd_kafka_buf_write_bool(resp, rd_false);
-        /* Response: Topics.#Partitions */
-        rd_kafka_buf_write_i32(resp, mtopic ? mtopic->partition_cnt : 0);
-
-        for (i = 0 ; mtopic && i < mtopic->partition_cnt ; i++) {
-                const rd_kafka_mock_partition_t *mpart =
-                        &mtopic->partitions[i];
-                int r;
-
-                /* Response: ..Partitions.ErrorCode */
-                rd_kafka_buf_write_i16(resp, 0);
-                /* Response: ..Partitions.PartitionIndex */
-                rd_kafka_buf_write_i32(resp, mpart->id);
-                /* Response: ..Partitions.Leader */
-                rd_kafka_buf_write_i32(resp,
-                                       mpart->leader ?
-                                       mpart->leader->id : -1);
-
-                if (ApiVersion >= 7) {
-                        /* Response: ..Partitions.LeaderEpoch */
-                        rd_kafka_buf_write_i32(resp, -1);
-                }
-
-                /* Response: ..Partitions.#ReplicaNodes */
-                rd_kafka_buf_write_i32(resp,
-                                       mpart->replica_cnt);
-                for (r = 0 ; r < mpart->replica_cnt ; r++)
-                        rd_kafka_buf_write_i32(
-                                resp,
-                                mpart->replicas[r]->id);
-
-                /* Response: ..Partitions.#IsrNodes */
-                /* Let Replicas == ISRs for now */
-                rd_kafka_buf_write_i32(resp,
-                                       mpart->replica_cnt);
-                for (r = 0 ; r < mpart->replica_cnt ; r++)
-                        rd_kafka_buf_write_i32(
-                                resp,
-                                mpart->replicas[r]->id);
-
-                if (ApiVersion >= 5) {
-                        /* Response: ...OfflineReplicas */
-                        rd_kafka_buf_write_i32(resp, 0);
-                }
-        }
-}
-
-
-/**
- * @brief Handle MetadataRequest
- */
-static int rd_kafka_mock_handle_Metadata (rd_kafka_mock_connection_t *mconn,
-                                          rd_kafka_buf_t *rkbuf) {
-        const rd_bool_t log_decode_errors = rd_true;
-        rd_kafka_mock_cluster_t *mcluster = mconn->broker->cluster;
-        rd_bool_t AllowAutoTopicCreation = rd_true;
-        rd_kafka_buf_t *resp = rd_kafka_mock_buf_new_response(rkbuf);
-        const rd_kafka_mock_broker_t *mrkb;
-        rd_kafka_topic_partition_list_t *requested_topics = NULL;
-        rd_bool_t list_all_topics = rd_false;
-        rd_kafka_mock_topic_t *mtopic;
-        size_t of_TopicsCnt;
-        int32_t TopicsCnt;
-        int i;
-
-        if (rkbuf->rkbuf_reqhdr.ApiVersion >= 3) {
-                /* Response: ThrottleTime */
-                rd_kafka_buf_write_i32(resp, 0);
-        }
-
-        /* Response: #Brokers */
-        rd_kafka_buf_write_i32(resp, mcluster->broker_cnt);
-
-        TAILQ_FOREACH(mrkb, &mcluster->brokers, link) {
-                /* Response: Brokers.Nodeid */
-                rd_kafka_buf_write_i32(resp, mrkb->id);
-                /* Response: Brokers.Host */
-                rd_kafka_buf_write_str(resp, mrkb->advertised_listener, -1);
-                /* Response: Brokers.Port */
-                rd_kafka_buf_write_i32(resp, mrkb->port);
-                if (rkbuf->rkbuf_reqhdr.ApiVersion >= 1) {
-                        /* Response: Brokers.Rack (Matt's going to love this) */
-                        rd_kafka_buf_write_str(resp, mrkb->rack, -1);
-                }
-        }
-
-        /* Response: ClusterId */
-        rd_kafka_buf_write_str(resp, mcluster->id, -1);
-        /* Response: ControllerId */
-        rd_kafka_buf_write_i32(resp, mcluster->controller_id);
-
-        /* #Topics */
-        rd_kafka_buf_read_i32(rkbuf, &TopicsCnt);
-
-        if (TopicsCnt > 0)
-                requested_topics = rd_kafka_topic_partition_list_new(TopicsCnt);
-        else if (rkbuf->rkbuf_reqhdr.ApiVersion == 0 || TopicsCnt == -1)
-                list_all_topics = rd_true;
-
-        for (i = 0 ; i < TopicsCnt ; i++) {
-                rd_kafkap_str_t Topic;
-                char *topic;
-
-                rd_kafka_buf_read_str(rkbuf, &Topic);
-                RD_KAFKAP_STR_DUPA(&topic, &Topic);
-
-                rd_kafka_topic_partition_list_add(requested_topics, topic,
-                                                  RD_KAFKA_PARTITION_UA);
-        }
-
-        if (rkbuf->rkbuf_reqhdr.ApiVersion >= 4)
-                rd_kafka_buf_read_bool(rkbuf, &AllowAutoTopicCreation);
-
-        if (rkbuf->rkbuf_reqhdr.ApiVersion >= 8) {
-                rd_bool_t IncludeClusterAuthorizedOperations;
-                rd_bool_t IncludeTopicAuthorizedOperations;
-                rd_kafka_buf_read_bool(rkbuf,
-                                       &IncludeClusterAuthorizedOperations);
-                rd_kafka_buf_read_bool(rkbuf,
-                                       &IncludeTopicAuthorizedOperations);
-        }
-
-        if (list_all_topics) {
-                /* Response: #Topics */
-                of_TopicsCnt = rd_kafka_buf_write_i32(resp,
-                                                      mcluster->topic_cnt);
-
-                TAILQ_FOREACH(mtopic, &mcluster->topics, link) {
-                        rd_kafka_mock_buf_write_Metadata_Topic(
-                                resp, rkbuf->rkbuf_reqhdr.ApiVersion,
-                                mtopic->name, mtopic,
-                                RD_KAFKA_RESP_ERR_NO_ERROR);
-                }
-
-        } else if (requested_topics) {
-                /* Response: #Topics */
-                of_TopicsCnt = rd_kafka_buf_write_i32(resp,
-                                                      requested_topics->cnt);
-
-                for (i = 0 ; i < requested_topics->cnt ; i++) {
-                        const rd_kafka_topic_partition_t *rktpar =
-                                &requested_topics->elems[i];
-                        rd_kafka_mock_topic_t *mtopic;
-                        rd_kafka_resp_err_t err = RD_KAFKA_RESP_ERR_NO_ERROR;
-
-                        mtopic = rd_kafka_mock_topic_find(mcluster,
-                                                          rktpar->topic);
-                        if (!mtopic && AllowAutoTopicCreation)
-                                mtopic = rd_kafka_mock_topic_auto_create(
-                                        mcluster, rktpar->topic, &err);
-                        else if (!mtopic)
-                                err = RD_KAFKA_RESP_ERR_UNKNOWN_TOPIC_OR_PART;
-
-                        rd_kafka_mock_buf_write_Metadata_Topic(
-                                resp, rkbuf->rkbuf_reqhdr.ApiVersion,
-                                rktpar->topic, mtopic, err);
-                }
-
-                if (rkbuf->rkbuf_reqhdr.ApiVersion >= 8) {
-                        /* TopicAuthorizedOperations */
-                        rd_kafka_buf_write_i32(resp, -2147483648);
-                }
-        } else {
-                /* Response: #Topics: brokers only */
-                rd_kafka_buf_write_i32(resp, 0);
-        }
-
-        if (rkbuf->rkbuf_reqhdr.ApiVersion >= 8) {
-                /* ClusterAuthorizedOperations */
-                rd_kafka_buf_write_i32(resp, -2147483648);
-        }
-
-
-        rd_kafka_mock_connection_send_response(mconn, rkbuf, resp);
-
-        return 0;
-
- err_parse:
-        if (requested_topics)
-                rd_kafka_topic_partition_list_destroy(requested_topics);
-
-        rd_kafka_buf_destroy(resp);
-        return -1;
-
-}
-
-
-/**
- * @brief Handle FindCoordinatorRequest
- */
-static int
-rd_kafka_mock_handle_FindCoordinator (rd_kafka_mock_connection_t *mconn,
-                                      rd_kafka_buf_t *rkbuf) {
-        rd_kafka_mock_cluster_t *mcluster = mconn->broker->cluster;
-        const rd_bool_t log_decode_errors = rd_true;
-        rd_kafka_buf_t *resp = rd_kafka_mock_buf_new_response(rkbuf);
-        rd_kafkap_str_t Key;
-        int8_t KeyType = RD_KAFKA_COORD_GROUP;
-        const rd_kafka_mock_broker_t *mrkb = NULL;
-
-        /* Key */
-        rd_kafka_buf_read_str(rkbuf, &Key);
-
-        if (rkbuf->rkbuf_reqhdr.ApiVersion >= 1) {
-                /* KeyType */
-                rd_kafka_buf_read_i8(rkbuf, &KeyType);
-        }
-
-
-        /*
-         * Construct response
-         */
-        if (rkbuf->rkbuf_reqhdr.ApiVersion >= 1) {
-                /* Response: Throttle */
-                rd_kafka_buf_write_i32(resp, 0);
-        }
-
-        if (RD_KAFKAP_STR_LEN(&Key) > 0) {
-                mrkb = rd_kafka_mock_cluster_get_coord(mcluster,
-                                                       KeyType, &Key);
-                rd_assert(mrkb);
-        }
-
-        if (!mrkb) {
-                /* Response: ErrorCode and ErrorMessage */
-                rd_kafka_buf_write_i16(
-                        resp, RD_KAFKA_RESP_ERR_COORDINATOR_NOT_AVAILABLE);
-                if (rkbuf->rkbuf_reqhdr.ApiVersion >= 1)
-                        rd_kafka_buf_write_str(resp,
-                                               "No coordinator available", -1);
-
-                /* Response: NodeId, Host, Port */
-                rd_kafka_buf_write_i32(resp, -1);
-                rd_kafka_buf_write_str(resp, NULL, -1);
-                rd_kafka_buf_write_i32(resp, -1);
-        } else {
-                /* Response: ErrorCode and ErrorMessage */
-                rd_kafka_buf_write_i16(resp, 0);
-                if (rkbuf->rkbuf_reqhdr.ApiVersion >= 1)
-                        rd_kafka_buf_write_str(resp, NULL, -1);
-
-                /* Response: NodeId, Host, Port */
-                rd_kafka_buf_write_i32(resp, mrkb->id);
-                rd_kafka_buf_write_str(resp, mrkb->advertised_listener, -1);
-                rd_kafka_buf_write_i32(resp, mrkb->port);
-        }
-
-        rd_kafka_mock_connection_send_response(mconn, rkbuf, resp);
-        return 0;
-
- err_parse:
-        rd_kafka_buf_destroy(resp);
-        return -1;
-}
-
-
-/**
- * @brief Handle InitProducerId
- */
-static int
-rd_kafka_mock_handle_InitProducerId (rd_kafka_mock_connection_t *mconn,
-                                     rd_kafka_buf_t *rkbuf) {
-        rd_kafka_mock_cluster_t *mcluster = mconn->broker->cluster;
-        const rd_bool_t log_decode_errors = rd_true;
-        rd_kafka_buf_t *resp = rd_kafka_mock_buf_new_response(rkbuf);
-        rd_kafkap_str_t TransactionalId;
-        rd_kafka_pid_t pid;
-        int32_t TxnTimeoutMs;
-
-        /* TransactionalId */
-        rd_kafka_buf_read_str(rkbuf, &TransactionalId);
-        /* TransactionTimeoutMs */
-        rd_kafka_buf_read_i32(rkbuf, &TxnTimeoutMs);
-
-        /*
-         * Construct response
-         */
-
-        /* ThrottleTimeMs */
-        rd_kafka_buf_write_i32(resp, 0);
-        /* ErrorCode */
-        rd_kafka_buf_write_i16(resp, RD_KAFKA_RESP_ERR_NO_ERROR);
-
-        rd_kafka_mock_pid_generate(mcluster, &pid);
-
-        /* ProducerId */
-        rd_kafka_buf_write_i64(resp, pid.id);
-        /* ProducerEpoch */
-        rd_kafka_buf_write_i16(resp, pid.epoch);
-
-        rd_kafka_mock_connection_send_response(mconn, rkbuf, resp);
-
-        return 0;
-
- err_parse:
-        rd_kafka_buf_destroy(resp);
-        return -1;
-}
-
-/**
- * @brief Default request handlers
- */
-static const struct {
-        int16_t MinVersion;
-        int16_t MaxVersion;
-        int (*cb) (rd_kafka_mock_connection_t *mconn, rd_kafka_buf_t *rkbuf);
-} rd_kafka_mock_api_handlers[RD_KAFKAP__NUM] = {
-        [RD_KAFKAP_ApiVersion] = { 0, 2, rd_kafka_mock_handle_ApiVersion },
-        [RD_KAFKAP_Metadata] = { 0, 2, rd_kafka_mock_handle_Metadata },
-        [RD_KAFKAP_FindCoordinator] = { 0, 2,
-                                        rd_kafka_mock_handle_FindCoordinator },
-        [RD_KAFKAP_InitProducerId] = { 0, 1,
-                                       rd_kafka_mock_handle_InitProducerId },
-};
-
-
-
-static int rd_kafka_mock_handle_ApiVersion (rd_kafka_mock_connection_t *mconn,
-                                            rd_kafka_buf_t *rkbuf) {
-        rd_kafka_buf_t *resp = rd_kafka_mock_buf_new_response(rkbuf);
-        size_t of_ApiKeysCnt;
-        int cnt = 0;
-        int i;
-
-        /* ErrorCode */
-        rd_kafka_buf_write_i16(resp, RD_KAFKA_RESP_ERR_NO_ERROR);
-
-        /* #ApiKeys */
-        of_ApiKeysCnt = rd_kafka_buf_write_i32(resp, 0); /* updated later */
-
-        for (i = 0 ; i < RD_KAFKAP__NUM ; i++) {
-                if (!rd_kafka_mock_api_handlers[i].cb)
-                        continue;
-
-                /* ApiKey */
-                rd_kafka_buf_write_i16(resp, (int16_t)i);
-                /* MinVersion */
-                rd_kafka_buf_write_i16(
-                        resp, rd_kafka_mock_api_handlers[i].MinVersion);
-                /* MaxVersion */
-                rd_kafka_buf_write_i16(
-                        resp, rd_kafka_mock_api_handlers[i].MaxVersion);
-
-                cnt++;
-        }
-
-        rd_kafka_buf_update_i32(resp, of_ApiKeysCnt, cnt);
-
-        if (rkbuf->rkbuf_reqhdr.ApiVersion >= 1) {
-                /* ThrottletimeMs */
-                rd_kafka_buf_write_i32(resp, 0);
-        }
-
-        rd_kafka_mock_connection_send_response(mconn, rkbuf, resp);
-
-        return 0;
-}
 
 
 /**
@@ -1010,10 +648,9 @@ rd_kafka_mock_connection_new (rd_kafka_mock_broker_t *mrkb, int s,
 
 
 
-static void rd_kafka_mock_cluster_ctrl_io (rd_kafka_mock_cluster_t *mcluster,
+static void rd_kafka_mock_cluster_op_io (rd_kafka_mock_cluster_t *mcluster,
                                            int fd, int events, void *opaque) {
-        rd_kafka_dbg(mcluster->rk, MOCK, "MOCK", "Shutting down mock cluster");
-        mcluster->run = rd_false;
+        /* nop */
 }
 
 
@@ -1026,7 +663,6 @@ static int rd_kafka_mock_cluster_io_poll (rd_kafka_mock_cluster_t *mcluster) {
 #else
         r = WSAPoll(mcluster->fds, mcluster->fd_cnt, -1);
 #endif
-
         if (r == -1) {
                 rd_kafka_log(mcluster->rk, LOG_CRIT, "MOCK",
                              "Mock cluster failed to poll %d fds: %s",
@@ -1034,7 +670,12 @@ static int rd_kafka_mock_cluster_io_poll (rd_kafka_mock_cluster_t *mcluster) {
                 return -1;
         }
 
-        for (i = 0 ; r > 0 && i < mcluster->fd_cnt ; i++) {
+        /* Serve ops, if any */
+        rd_kafka_q_serve(mcluster->ops, RD_POLL_NOWAIT, 0,
+                         RD_KAFKA_Q_CB_CALLBACK, NULL, NULL);
+
+        /* Handle IO events, if any, and if not terminating */
+        for (i = 0 ; mcluster->run  && r > 0 && i < mcluster->fd_cnt ; i++) {
                 if (!mcluster->fds[i].revents)
                         continue;
 
@@ -1058,10 +699,10 @@ static int rd_kafka_mock_cluster_thread_main (void *arg) {
                                               RD_KAFKA_THREAD_BACKGROUND);
         rd_atomic32_add(&rd_kafka_thread_cnt_curr, 1);
 
-        /* Control socket IO */
-        rd_kafka_mock_cluster_io_add(mcluster, mcluster->ctrl_s[0],
+        /* Op wakeup fd */
+        rd_kafka_mock_cluster_io_add(mcluster, mcluster->wakeup_fds[0],
                                      POLLIN|POLLHUP,
-                                     rd_kafka_mock_cluster_ctrl_io, NULL);
+                                     rd_kafka_mock_cluster_op_io, NULL);
 
         mcluster->run = rd_true;
 
@@ -1071,7 +712,7 @@ static int rd_kafka_mock_cluster_thread_main (void *arg) {
                         break;
         }
 
-        rd_kafka_mock_cluster_io_del(mcluster, mcluster->ctrl_s[0]);
+        rd_kafka_mock_cluster_io_del(mcluster, mcluster->wakeup_fds[0]);
 
 
         rd_kafka_interceptors_on_thread_exit(mcluster->rk,
@@ -1226,6 +867,8 @@ static void
 rd_kafka_mock_cluster_destroy0 (rd_kafka_mock_cluster_t *mcluster) {
         rd_kafka_mock_topic_t *mtopic;
         rd_kafka_mock_broker_t *mrkb;
+        thrd_t dummy_rkb_thread;
+        int ret;
 
         while ((mtopic = TAILQ_FIRST(&mcluster->topics)))
                 rd_kafka_mock_topic_destroy(mtopic);
@@ -1233,14 +876,48 @@ rd_kafka_mock_cluster_destroy0 (rd_kafka_mock_cluster_t *mcluster) {
         while ((mrkb = TAILQ_FIRST(&mcluster->brokers)))
                 rd_kafka_mock_broker_destroy(mrkb);
 
+        /*
+         * Destroy dummy broker
+         */
+        rd_kafka_q_enq(mcluster->dummy_rkb->rkb_ops,
+                       rd_kafka_op_new(RD_KAFKA_OP_TERMINATE));
+        dummy_rkb_thread = mcluster->dummy_rkb->rkb_thread;
         rd_kafka_broker_destroy(mcluster->dummy_rkb);
+        thrd_join(dummy_rkb_thread, &ret);
+
+        rd_kafka_q_destroy_owner(mcluster->ops);
 
         if (mcluster->fd_size > 0) {
                 rd_free(mcluster->fds);
                 rd_free(mcluster->handlers);
         }
 
+        rd_free(mcluster->bootstraps);
         rd_free(mcluster);
+}
+
+
+static rd_kafka_op_res_t
+rd_kafka_mock_cluster_op_serve (rd_kafka_t *rk, rd_kafka_q_t *rkq,
+                                rd_kafka_op_t *rko,
+                                rd_kafka_q_cb_type_t cb_type, void *opaque) {
+        rd_kafka_mock_cluster_t *mcluster = opaque;
+        rd_kafka_resp_err_t err = RD_KAFKA_RESP_ERR_NO_ERROR;
+
+        switch ((int)rko->rko_type)
+        {
+        case RD_KAFKA_OP_TERMINATE:
+                mcluster->run = rd_false;
+                break;
+
+        default:
+                rd_assert(!"*unhandled op");
+                break;
+        }
+
+        rd_kafka_op_reply(rko, err);
+
+        return RD_KAFKA_OP_RES_HANDLED;
 }
 
 
@@ -1251,36 +928,31 @@ rd_kafka_mock_cluster_destroy0 (rd_kafka_mock_cluster_t *mcluster) {
  */
 void rd_kafka_mock_cluster_destroy (rd_kafka_mock_cluster_t *mcluster) {
         int res;
+        rd_kafka_op_t *rko;
 
         rd_kafka_dbg(mcluster->rk, MOCK, "MOCK", "Destroying cluster");
 
-        if (rd_write(mcluster->ctrl_s[1], "term", 4) == -1)
-                rd_kafka_log(mcluster->rk, LOG_ERR, "MOCK",
-                             "mock_cluster_destroy rd_write(%d) failure: %s",
-                             mcluster->ctrl_s[1], rd_strerror(errno));
+        rko = rd_kafka_op_req2(mcluster->ops, RD_KAFKA_OP_TERMINATE);
+
+        if (rko)
+                rd_kafka_op_destroy(rko);
 
         if (thrd_join(mcluster->thread, &res) != thrd_success)
                 rd_assert(!*"failed to join mock thread");
 
-        rd_close(mcluster->ctrl_s[0]);
-        rd_close(mcluster->ctrl_s[1]);
+        rd_close(mcluster->wakeup_fds[0]);
+        rd_close(mcluster->wakeup_fds[1]);
 
         rd_kafka_mock_cluster_destroy0(mcluster);
 }
 
 
-/**
- * @brief Start the mock cluster
- */
-void rd_kafka_mock_cluster_start (rd_kafka_mock_cluster_t *mcluster) {
-
-}
 
 rd_kafka_mock_cluster_t *rd_kafka_mock_cluster_new (rd_kafka_t *rk,
                                                     int broker_cnt) {
         rd_kafka_mock_cluster_t *mcluster;
         rd_kafka_mock_broker_t *mrkb;
-        int i;
+        int i, r;
         size_t bootstraps_len = 0;
         size_t of;
 
@@ -1291,7 +963,7 @@ rd_kafka_mock_cluster_t *rd_kafka_mock_cluster_new (rd_kafka_t *rk,
                                                   "mock", 0,
                                                   RD_KAFKA_NODEID_UA);
         rd_snprintf(mcluster->id, sizeof(mcluster->id),
-                    "mockCluster%x", (int)rk ^ (int)mcluster);
+                    "mockCluster%lx", (intptr_t)rk ^ (intptr_t)mcluster);
 
         TAILQ_INIT(&mcluster->brokers);
 
@@ -1309,15 +981,24 @@ rd_kafka_mock_cluster_t *rd_kafka_mock_cluster_new (rd_kafka_t *rk,
         mcluster->defaults.partition_cnt = 4;
         mcluster->defaults.replication_factor = RD_MIN(3, broker_cnt);
 
+        /* Use an op queue for controlling the cluster in
+         * a thread-safe manner without locking. */
+        mcluster->ops = rd_kafka_q_new(rk);
+        mcluster->ops->rkq_serve = rd_kafka_mock_cluster_op_serve;
+        mcluster->ops->rkq_opaque = mcluster;
 
-        /* Create control socket pipe for signalling termination
-         * of the mock thread. */
-        if (rd_pipe(mcluster->ctrl_s) == -1) {
-                rd_kafka_log(rk, LOG_CRIT, "MOCK",
-                             "Failed to create mock pipe: %s",
-                             rd_strerror(errno));
-                rd_kafka_mock_cluster_destroy(mcluster);
+
+        if ((r = rd_pipe_nonblocking(mcluster->wakeup_fds)) == -1) {
+                rd_kafka_log(rk, LOG_ERR, "MOCK",
+                             "Failed to setup mock cluster wake-up fds: %s",
+                             rd_strerror(r));
+        } else {
+                const char onebyte = 1;
+                rd_kafka_q_io_event_enable(mcluster->ops,
+                                           mcluster->wakeup_fds[1],
+                                           &onebyte, sizeof(onebyte));
         }
+
 
         if (thrd_create(&mcluster->thread,
                         rd_kafka_mock_cluster_thread_main, mcluster) !=
