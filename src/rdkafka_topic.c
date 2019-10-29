@@ -543,9 +543,10 @@ static int rd_kafka_toppar_leader_update2 (rd_kafka_itopic_t *rkt,
                  * Probably caused by corrupt broker state. */
                 rd_kafka_log(rkt->rkt_rk, LOG_WARNING, "LEADER",
                              "%s [%"PRId32"] is unknown "
-                             "(partition_cnt %i)",
+                             "(partition_cnt %i): "
+                             "ignoring leader (%"PRId32") update",
                              rkt->rkt_topic->str, partition,
-                             rkt->rkt_partition_cnt);
+                             rkt->rkt_partition_cnt, leader_id);
                 return -1;
         }
 
