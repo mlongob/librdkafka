@@ -149,4 +149,6 @@ void rd_kafka_txn_set_fatal_error (rd_kafka_t *rk,
 
 void rd_kafka_txns_term (rd_kafka_t *rk);
 void rd_kafka_txns_init (rd_kafka_t *rk);
+
+int unittest_txnmgr (void);
 #endif /* _RDKAFKA_TXNMGR_H_ */

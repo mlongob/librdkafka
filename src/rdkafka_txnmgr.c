@@ -36,6 +36,8 @@
 #include "rdkafka_txnmgr.h"
 #include "rdkafka_idempotence.h"
 #include "rdkafka_request.h"
+#include "rdunittest.h"
+#include "rdrand.h"
 
 
 static void rd_kafka_txn_cancel_op_timeout (rd_kafka_t *rk);
@@ -1985,4 +1987,57 @@ void rd_kafka_txns_init (rd_kafka_t *rk) {
         TAILQ_INIT(&rk->rk_eos.txn_pending_rktps);
         TAILQ_INIT(&rk->rk_eos.txn_waitresp_rktps);
         TAILQ_INIT(&rk->rk_eos.txn_rktps);
+}
+
+
+
+
+/**
+ * @brief Create a transactional producer and a mock cluster.
+ */
+static rd_kafka_t *ut_create_txn_producer (void) {
+        rd_kafka_conf_t *conf = rd_kafka_conf_new();
+        rd_kafka_t *rk;
+        char txnid[32];
+        char errstr[512];
+
+        rd_snprintf(txnid, sizeof(txnid), "unittest%x", rd_jitter(1, 1000000));
+
+        rd_kafka_conf_set(conf, "transactional.id", txnid, NULL, 0);
+        rd_kafka_conf_set(conf, "test.mock.num.brokers", "3", NULL, 0);
+
+        rk = rd_kafka_new(RD_KAFKA_PRODUCER, conf, errstr, sizeof(errstr));
+        if (!rk) {
+                RD_UT_WARN("Failed to create producer: %s", errstr);
+                return NULL;
+        }
+
+        return rk;
+}
+
+
+
+/**
+ * @brief Test osmething
+ */
+static int ut_txnmgr_test_something (void) {
+        rd_kafka_t *rk = ut_create_txn_producer();
+
+        RD_UT_ASSERT(rk, "Failed to create producer");
+
+        rd_kafka_destroy(rk);
+
+        RD_UT_PASS();
+}
+
+
+/**
+ * @brief Unit tests for producer transactions
+ */
+int unittest_txnmgr (void) {
+        int fails = 0;
+
+        fails += ut_txnmgr_test_something();
+
+        return fails;
 }
