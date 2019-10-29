@@ -163,7 +163,7 @@ int main (int argc, char **argv) {
         /*
          * Argument validation
          */
-        if (argc != 3) {
+        if (argc != 4) {
                 fprintf(stderr, "%% Usage: %s <broker> <topic>\n", argv[0]);
                 return 1;
         }
@@ -179,7 +179,7 @@ int main (int argc, char **argv) {
 
         rd_kafka_conf_set(conf, "test.mock.num.brokers", "3", NULL, 0);
         rd_kafka_conf_set(conf, "transactional.id", "gooseGreen", NULL, 0);
-        rd_kafka_conf_set(conf, "debug", "protocol,mock,eos", NULL, 0);
+        rd_kafka_conf_set(conf, "debug", argv[3], NULL, 0);
 
         /* Set bootstrap broker(s) as a comma-separated list of
          * host or host:port (default port 9092).
@@ -326,12 +326,14 @@ int main (int argc, char **argv) {
                 /* Since fatal errors can't be triggered in practice,
                  * use the test API to trigger a fabricated error after
                  * some time. */
-                if (0 && msgcnt == 13)
+                if (msgcnt == 13) {
+                        break;
                         rd_kafka_test_fatal_error(
                                 rk,
                                 RD_KAFKA_RESP_ERR_OUT_OF_ORDER_SEQUENCE_NUMBER,
                                 "This is a fabricated error to test the "
                                 "fatal error handling");
+                }
 
                 /* Short sleep to rate-limit this example.
                  * A real application should not do this. */
