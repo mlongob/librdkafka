@@ -777,6 +777,70 @@ rd_kafka_admin_worker (rd_kafka_t *rk, rd_kafka_q_t *rkq, rd_kafka_op_t *rko) {
                 goto redo;
 
 
+        case RD_KAFKA_ADMIN_STATE_CONSTRUCT_COORDINATOR_REQUEST:
+                /* Got controller, send FindCoordinator request. */
+
+                /* Make sure we're called from a 'goto redo' where
+                 * the rkb was set. */
+                rd_assert(rkb);
+
+                /* Still need to use the eonce since this worker may
+                 * time out while waiting for response from broker, in which
+                 * case the broker response will hit an empty eonce (ok). */
+                rd_kafka_enq_once_add_source(rko->rko_u.admin_request.eonce,
+                                             "send");
+
+                /* Send request (async) */
+                err = rd_kafka_DeleteGroupsFindCoordinatorRequest(
+                        rkb,
+                        &rko->rko_u.admin_request.args,
+                        &rko->rko_u.admin_request.options,
+                        errstr, sizeof(errstr),
+                        RD_KAFKA_REPLYQ(rk->rk_ops, 0),
+                        rd_kafka_admin_handle_response,
+                        rko->rko_u.admin_request.eonce);
+
+                /* Loose broker refcount from get_broker(), get_controller() */
+                rd_kafka_broker_destroy(rkb);
+
+                if (err) {
+                        rd_kafka_enq_once_del_source(
+                                rko->rko_u.admin_request.eonce, "send");
+                        rd_kafka_admin_result_fail(rko, err, "%s", errstr);
+                        goto destroy;
+                }
+
+                rko->rko_u.admin_request.state =
+                        RD_KAFKA_ADMIN_STATE_WAIT_COORDINATOR_RESPONSE;
+
+                /* Wait asynchronously for broker response, which will
+                 * trigger the eonce and worker to be called again. */
+                return RD_KAFKA_OP_RES_KEEP;
+
+
+        case RD_KAFKA_ADMIN_STATE_WAIT_COORDINATOR_RESPONSE:
+        {
+                rd_kafka_op_t *rko_result;
+
+                /* Response received.
+                 * Parse response and populate result to application */
+                err = rd_kafka_DeleteGroupsFindCoordinatorResponse_parse(
+                        rko, &rko_result,
+                        rko->rko_u.admin_request.reply_buf,
+                        errstr, sizeof(errstr));
+                if (err) {
+                        rd_kafka_admin_result_fail(
+                                rko, err,
+                                "%s worker failed to parse FindCoordinator response: %s",
+                                name, errstr);
+                        goto destroy;
+                }
+
+                rko->rko_u.admin_request.broker_id = 33;
+                rko->rko_u.admin_request.state =
+                        RD_KAFKA_ADMIN_STATE_WAIT_BROKER;
+                goto redo;
+        }
         case RD_KAFKA_ADMIN_STATE_CONSTRUCT_REQUEST:
                 /* Got broker, send protocol request. */
 
@@ -2901,6 +2965,98 @@ rd_kafka_DeleteGroupsResponse_parse (rd_kafka_op_t *rko_req,
         return err;
 }
 
+static rd_kafka_resp_err_t
+rd_kafka_DeleteGroupsFindCoordinatorResponse_parse (rd_kafka_op_t *rko_req,
+                                                    rd_kafka_op_t **rko_resultp,
+                                                    rd_kafka_buf_t *reply,
+                                                    char *errstr, size_t errstr_size) {
+        const int log_decode_errors = LOG_ERR;
+        rd_kafka_resp_err_t err = RD_KAFKA_RESP_ERR_NO_ERROR;
+        rd_kafka_broker_t *rkb = reply->rkbuf_rkb;
+        rd_kafka_t *rk = rkb->rkb_rk;
+        rd_kafka_op_t *rko_result = NULL;
+        int16_t error_code;
+        rd_kafkap_str_t error_msg = RD_KAFKAP_STR_INITIALIZER;
+        char *error_str = NULL;
+        int32_t coord_id;
+        rd_kafkap_str_t coord_host = RD_ZERO_INIT;
+        int32_t coord_port;
+        rd_kafka_group_result_t *terr; /* TODO(mario): remove me */
+
+        if (rd_kafka_buf_ApiVersion(reply) >= 1) {
+                int32_t Throttle_Time;
+                rd_kafka_buf_read_i32(reply, &Throttle_Time);
+                rd_kafka_op_throttle_time(rkb, rk->rk_rep, Throttle_Time);
+        }
+        rd_kafka_buf_read_i16(reply, &error_code);
+        if (rd_kafka_buf_ApiVersion(reply) >= 1)
+                rd_kafka_buf_read_str(reply, &error_msg);
+        rd_kafka_buf_read_i32(reply, &coord_id);
+        rd_kafka_buf_read_str(reply, &coord_host);
+        rd_kafka_buf_read_i32(reply, &coord_port);
+
+        if (error_code) {
+                if (RD_KAFKAP_STR_IS_NULL(&error_msg) ||
+                    RD_KAFKAP_STR_LEN(&error_msg) == 0)
+                        error_str = (char *)rd_kafka_err2str(error_code);
+                else
+                        RD_KAFKAP_STR_DUPA(&error_str, &error_msg);
+
+        } else {
+                error_str = NULL;
+        }
+
+        /* TODO(mario): Remove me */
+        rko_result = rd_kafka_admin_result_new(rko_req);
+
+        rd_list_init(&rko_result->rko_u.admin_result.results, 1,
+                     rd_kafka_group_result_free);
+        terr = rd_kafka_group_result_new(coord_host.str,
+                                         coord_host.len,
+                                         error_code,
+                                         error_str);
+        rd_list_add(&rko_result->rko_u.admin_result.results,
+                    terr);
+
+        *rko_resultp = rko_result;
+
+        return RD_KAFKA_RESP_ERR_NO_ERROR;
+
+err_parse:
+        if (rko_result)
+                rd_kafka_op_destroy(rko_result);
+
+        rd_snprintf(errstr, errstr_size,
+                    "DeleteGroupsFindCoordinator response protocol parse failure: %s",
+                    rd_kafka_err2str(err));
+
+        return err;
+}
+
+static rd_kafka_resp_err_t
+rd_kafka_DeleteGroupsFindCoordinatorRequest (rd_kafka_broker_t *rkb,
+                                             const rd_list_t *del_groups,
+                                             rd_kafka_AdminOptions_t *options,
+                                             char *errstr, size_t errstr_size,
+                                             rd_kafka_replyq_t replyq,
+                                             rd_kafka_resp_cb_t *resp_cb,
+                                             void *opaque) {
+        rd_kafka_DeleteGroup_t *delt;
+        if (rd_list_cnt(del_groups) != 1) {
+                rd_snprintf(errstr, errstr_size, "Must find one coordinator at the time");
+                rd_kafka_replyq_destroy(&replyq);
+                return RD_KAFKA_RESP_ERR__INVALID_ARG;
+        }
+        delt = rd_list_elem(del_groups, 0);
+        rd_kafka_GroupCoordinatorRequest(rkb,
+                                         rd_kafkap_str_new(delt->group, -1),
+                                         replyq,
+                                         resp_cb,
+                                         opaque);
+        return RD_KAFKA_RESP_ERR_NO_ERROR;
+}
+
+
 
 void rd_kafka_DeleteGroups (rd_kafka_t *rk,
                             rd_kafka_DeleteGroup_t **del_groups,
@@ -2910,14 +3066,15 @@ void rd_kafka_DeleteGroups (rd_kafka_t *rk,
         rd_kafka_op_t *rko;
         size_t i;
         static const struct rd_kafka_admin_worker_cbs cbs = {
-                rd_kafka_DeleteGroupsRequest,
-                rd_kafka_DeleteGroupsResponse_parse,
+                rd_kafka_DeleteGroupsFindCoordinatorRequest,
+                rd_kafka_DeleteGroupsFindCoordinatorResponse_parse,
         };
 
         rko = rd_kafka_admin_request_op_new(rk,
                                             RD_KAFKA_OP_DELETEGROUPS,
                                             RD_KAFKA_EVENT_DELETEGROUPS_RESULT,
                                             &cbs, options, rkqu);
+        /* rko->rko_u.admin_request.broker_id = 26927; */
 
         rd_list_init(&rko->rko_u.admin_request.args, (int)del_group_cnt,
                      rd_kafka_DeleteGroup_free);

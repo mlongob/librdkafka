@@ -379,6 +379,8 @@ struct rd_kafka_op_s {
                                 RD_KAFKA_ADMIN_STATE_INIT,
                                 RD_KAFKA_ADMIN_STATE_WAIT_BROKER,
                                 RD_KAFKA_ADMIN_STATE_WAIT_CONTROLLER,
+                                RD_KAFKA_ADMIN_STATE_CONSTRUCT_COORDINATOR_REQUEST,
+                                RD_KAFKA_ADMIN_STATE_WAIT_COORDINATOR_RESPONSE,
                                 RD_KAFKA_ADMIN_STATE_CONSTRUCT_REQUEST,
                                 RD_KAFKA_ADMIN_STATE_WAIT_RESPONSE,
                         } state;
