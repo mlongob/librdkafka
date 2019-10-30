@@ -37,6 +37,11 @@ mkl_toggle_option "Development" ENABLE_SHAREDPTR_DEBUG "--enable-sharedptr-debug
 mkl_toggle_option "Feature" ENABLE_LZ4_EXT "--enable-lz4-ext" "Enable external LZ4 library support" "y"
 mkl_toggle_option "Feature" ENABLE_LZ4_EXT "--enable-lz4" "Deprecated: alias for --enable-lz4-ext" "y"
 
+# librdkafka with TSAN won't work with glibc C11 threads on Ubuntu 19.04.
+# This option allows disabling libc-based C11 threads and instead
+# use the builtin tinycthread alternative.
+mkl_toggle_option "Feature" ENABLE_C11THREADS "--enable-c11threads" "Enable detection of C11 threads support in libc" "y"
+
 
 function checks {
 
@@ -47,10 +52,11 @@ function checks {
     mkl_lib_check "libpthread" "" fail CC "-lpthread" \
                   "#include <pthread.h>"
 
-    # Use internal tinycthread if C11 threads not available.
-    # Requires -lpthread on glibc c11 threads, thus the use of $LIBS.
-    mkl_lib_check "c11threads" WITH_C11THREADS disable CC "$LIBS" \
-                  "
+    if [[ $ENABLE_C11THREADS == "y" ]]; then
+        # Use internal tinycthread if C11 threads not available.
+        # Requires -lpthread on glibc c11 threads, thus the use of $LIBS.
+        mkl_lib_check "c11threads" WITH_C11THREADS disable CC "$LIBS" \
+                      "
 #include <threads.h>
 
 
@@ -67,6 +73,7 @@ void foo (void) {
     }
 }
 "
+    fi
 
     # Check if dlopen() is available
     mkl_lib_check "libdl" "WITH_LIBDL" disable CC "-ldl" \
@@ -197,6 +204,16 @@ int foo (void) {
    return strndup(\"hi\", 2) ? 0 : 1;
 }"
 
+    # Check if strlcpy() is available
+    mkl_compile_check "strlcpy" "HAVE_STRLCPY" disable CC "" \
+"
+#define _DARWIN_C_SOURCE
+#include <string.h>
+int foo (void) {
+    char dest[4];
+   return strlcpy(dest, \"something\", sizeof(dest));
+}"
+
     # Check if strerror_r() is available.
     # The check for GNU vs XSI is done in rdposix.h since
     # we can't rely on all defines to be set here (_GNU_SOURCE).
@@ -253,5 +270,25 @@ void foo (void) {
 	mkl_compile_check valgrind WITH_VALGRIND disable CC "" \
 			  "#include <valgrind/memcheck.h>"
     fi
+
+    # getrusage() is used by the test framework
+    mkl_compile_check "getrusage" "HAVE_GETRUSAGE" disable CC "" \
+'
+#include <stdio.h>
+#include <sys/time.h>
+#include <sys/resource.h>
+
+
+void foo (void) {
+  struct rusage ru;
+  if (getrusage(RUSAGE_SELF, &ru) == -1)
+    return;
+  printf("ut %ld, st %ld, maxrss %ld, nvcsw %ld\n",
+         (long int)ru.ru_utime.tv_usec,
+         (long int)ru.ru_stime.tv_usec,
+         (long int)ru.ru_maxrss,
+         (long int)ru.ru_nvcsw);
+}'
+
 }
 

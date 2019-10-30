@@ -7,11 +7,11 @@ CYAN='\033[36m'
 CCLR='\033[0m'
 
 if [ -z "$1" ]; then
-    echo "Usage: $0 [-..] <execfile> [modes..]"
+    echo "Usage: $0 [-..] [modes..]"
     echo ""
     echo "  Modes: bare valgrind helgrind drd gdb lldb bash"
     echo "  Options:"
-    echo "   -..    - Command arguments (pass thru)"
+    echo "   -..    - test-runner command arguments (pass thru)"
     exit 1
 fi
 
@@ -22,9 +22,10 @@ while [[ $1 == -* ]]; do
     shift
 done
 
-TEST=$1
-if [ ! -z "$2" ]; then
-    MODES=$2
+TEST=./test-runner
+
+if [ ! -z "$1" ]; then
+    MODES=$1
 else
     MODES="bare"
     # Enable valgrind:
@@ -73,6 +74,11 @@ for mode in $MODES; do
 	    ;;
 	drd)
 	    valgrind $VALGRIND_ARGS --tool=drd $SUPP $GEN_SUPP \
+		$TEST	$ARGS
+	    RET=$?
+	    ;;
+        callgrind)
+	    valgrind $VALGRIND_ARGS --tool=callgrind $SUPP $GEN_SUPP \
 		$TEST	$ARGS
 	    RET=$?
 	    ;;

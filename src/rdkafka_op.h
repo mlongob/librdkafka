@@ -121,6 +121,8 @@ typedef enum {
         RD_KAFKA_OP_PURGE,           /**< Purge queues */
         RD_KAFKA_OP_CONNECT,         /**< Connect (to broker) */
         RD_KAFKA_OP_OAUTHBEARER_REFRESH, /**< Refresh OAUTHBEARER token */
+        RD_KAFKA_OP_BROKER_MONITOR,    /**< Broker state change */
+        RD_KAFKA_OP_TXN,             /**< Transaction command */
         RD_KAFKA_OP__END
 } rd_kafka_op_type_t;
 
@@ -422,7 +424,22 @@ struct rd_kafka_op_s {
                 struct {
                         int flags; /**< purge_flags from rd_kafka_purge() */
                 } purge;
-	} rko_u;
+
+                struct {
+                        struct rd_kafka_broker_s *rkb; /**< Broker who's state
+                                                        *   changed. */
+                        /**< Callback to trigger on the op handler's thread. */
+                        void (*cb) (struct rd_kafka_broker_s *rkb);
+                } broker_monitor;
+
+                struct {
+                        char *errstr;   /**< Error string, if rko_err is set */
+                        char *group_id; /**< Consumer group id for commits */
+                        int   timeout_ms; /**< Operation timeout */
+                        /**< Offsets to commit */
+                        rd_kafka_topic_partition_list_t *offsets;
+                } txn;
+        } rko_u;
 };
 
 TAILQ_HEAD(rd_kafka_op_head_s, rd_kafka_op_s);
@@ -446,10 +463,10 @@ rd_kafka_op_t *rd_kafka_op_new_reply (rd_kafka_op_t *rko_orig,
 rd_kafka_op_t *rd_kafka_op_new_cb (rd_kafka_t *rk,
                                    rd_kafka_op_type_t type,
                                    rd_kafka_op_cb_t *cb);
+void rd_kafka_op_reuse (rd_kafka_op_t *rko);
 int rd_kafka_op_reply (rd_kafka_op_t *rko, rd_kafka_resp_err_t err);
 
 #define rd_kafka_op_set_prio(rko,prio) ((rko)->rko_prio = prio)
-
 
 #define rd_kafka_op_err(rk,err,...) do {				\
 		if (!((rk)->rk_conf.enabled_events & RD_KAFKA_EVENT_ERROR)) { \

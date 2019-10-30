@@ -1167,7 +1167,8 @@ void rd_buf_dump (const rd_buf_t *rbuf, int do_hexdump) {
                         rbuf->rbuf_segment_cnt);
                 TAILQ_FOREACH(seg, &rbuf->rbuf_segments, seg_link) {
                         rd_segment_dump(seg, "  ", 0, do_hexdump);
-                        rd_assert(++segcnt <= rbuf->rbuf_segment_cnt);
+                        segcnt++;
+                        rd_assert(segcnt <= rbuf->rbuf_segment_cnt);
                 }
         }
 }
@@ -1232,7 +1233,7 @@ static int do_unittest_write_read (void) {
         RD_UT_ASSERT(pos == 200, "pos() returned position %"PRIusz, pos);
 
         r = rd_buf_write(&b, twos, 800);
-        RD_UT_ASSERT(pos == 200, "write() returned position %"PRIusz, r);
+        RD_UT_ASSERT(r == 200, "write() returned position %"PRIusz, r);
         pos = rd_buf_write_pos(&b);
         RD_UT_ASSERT(pos == 200+800, "pos() returned position %"PRIusz, pos);
 
@@ -1482,7 +1483,7 @@ static int do_unittest_write_read_payload_correctness (void) {
                 for (i = 0 ; i < max_cnt ; i++) {
                         uint32_t buf_crc;
 
-                        crc = rd_crc32_update(crc, (void *)&i, sizeof(&i));
+                        crc = rd_crc32_update(crc, (void *)&i, sizeof(i));
 
                         if (pass == 0)
                                 r = rd_slice_peek(&slice, i * sizeof(buf_crc),

@@ -271,9 +271,14 @@ static const struct rd_kafka_property rd_kafka_properties[] = {
 	{ _RK_GLOBAL|_RK_HIGH, "bootstrap.servers", _RK_C_ALIAS, 0,
 	  "See metadata.broker.list",
 	  .sdef = "metadata.broker.list" },
-	{ _RK_GLOBAL|_RK_MED, "message.max.bytes", _RK_C_INT, _RK(max_msg_size),
-	  "Maximum Kafka protocol request message size.",
-	  1000, 1000000000, 1000000 },
+        { _RK_GLOBAL|_RK_MED, "message.max.bytes", _RK_C_INT, _RK(max_msg_size),
+          "Maximum Kafka protocol request message size. "
+          "Due to differing framing overhead between protocol versions the "
+          "producer is unable to reliably enforce a strict max message limit "
+          "at produce time and may exceed the maximum size by one message in "
+          "protocol ProduceRequests, the broker will enforce the the topic's "
+          "`max.message.bytes` limit (see Apache Kafka documentation).",
+          1000, 1000000000, 1000000 },
 	{ _RK_GLOBAL, "message.copy.max.bytes", _RK_C_INT,
 	  _RK(msg_copy_max_size),
 	  "Maximum size for message to be copied to buffer. "
@@ -362,6 +367,7 @@ static const struct rd_kafka_property rd_kafka_properties[] = {
                         { RD_KAFKA_DBG_CONSUMER, "consumer" },
                         { RD_KAFKA_DBG_ADMIN,    "admin" },
                         { RD_KAFKA_DBG_EOS,      "eos" },
+                        { RD_KAFKA_DBG_MOCK,     "mock" },
 			{ RD_KAFKA_DBG_ALL,      "all" }
 		} },
 	{ _RK_GLOBAL, "socket.timeout.ms", _RK_C_INT, _RK(socket_timeout_ms),
@@ -829,6 +835,14 @@ static const struct rd_kafka_property rd_kafka_properties[] = {
           .dtor = rd_kafka_conf_interceptor_dtor,
           .copy = rd_kafka_conf_interceptor_copy },
 
+        /* Test mocks. */
+        { _RK_GLOBAL|_RK_HIDDEN, "test.mock.num.brokers", _RK_C_INT,
+          _RK(mock.broker_cnt),
+          "Number of mock brokers to create. "
+          "This will automatically overwrite `bootstrap.servers` with the "
+          "mock broker list.",
+          0, 10000, 0 },
+
         /* Unit test interfaces.
          * These are not part of the public API and may change at any time.
          * Only to be used by the librdkafka tests. */
@@ -1024,6 +1038,20 @@ static const struct rd_kafka_property rd_kafka_properties[] = {
           0, 1, 0 },
 
         /* Global producer properties */
+        { _RK_GLOBAL|_RK_PRODUCER|_RK_HIGH, "transactional.id", _RK_C_STR,
+          _RK(eos.transactional_id),
+          "The TransactionalId to use for transactional delivery. This enables reliability semantics which span multiple producer sessions since it allows the client to guarantee that transactions using the same TransactionalId have been completed prior to starting any new transactions. If no TransactionalId is provided, then the producer is limited to idempotent delivery. Note that enable.idempotence must be enabled if a TransactionalId is configured. The default is null, which means transactions cannot be used. Note that, by default, transactions require a cluster of at least three brokers which is the recommended setting for production; for development you can change this, by adjusting broker setting transaction.state.log.replication.factor." },
+        { _RK_GLOBAL|_RK_PRODUCER|_RK_MED, "transaction.timeout.ms", _RK_C_INT,
+          _RK(eos.transaction_timeout_ms),
+          "The maximum amount of time in milliseconds that the transaction "
+          "coordinator will wait for a transaction status update from the "
+          "producer before proactively aborting the ongoing transaction. "
+          "If this value is larger than the `transaction.max.timeout.ms` "
+          "setting in the broker, the init_transactions() call will fail with "
+          "ERR_INVALID_TRANSACTION_TIMEOUT. "
+          "The transaction timeout must be at least 1000 ms larger than "
+          "`message.timeout.ms` and `socket.timeout.ms`.",
+          1000, INT_MAX, 60000 },
         { _RK_GLOBAL|_RK_PRODUCER|_RK_HIGH, "enable.idempotence", _RK_C_BOOL,
           _RK(eos.idempotence),
           "When set to `true`, the producer will ensure that messages are "
@@ -1887,6 +1915,8 @@ static void rd_kafka_defaultconf_set (int scope, void *conf) {
 
 rd_kafka_conf_t *rd_kafka_conf_new (void) {
 	rd_kafka_conf_t *conf = rd_calloc(1, sizeof(*conf));
+        rd_assert(RD_KAFKA_CONF_PROPS_IDX_MAX > sizeof(*conf) &&
+                  *"Increase RD_KAFKA_CONF_PROPS_IDX_MAX");
 	rd_kafka_defaultconf_set(_RK_GLOBAL, conf);
         rd_kafka_anyconf_clear_all_is_modified(conf);
 	return conf;
@@ -1894,6 +1924,8 @@ rd_kafka_conf_t *rd_kafka_conf_new (void) {
 
 rd_kafka_topic_conf_t *rd_kafka_topic_conf_new (void) {
 	rd_kafka_topic_conf_t *tconf = rd_calloc(1, sizeof(*tconf));
+        rd_assert(RD_KAFKA_CONF_PROPS_IDX_MAX > sizeof(*tconf) &&
+                  *"Increase RD_KAFKA_CONF_PROPS_IDX_MAX");
 	rd_kafka_defaultconf_set(_RK_TOPIC, tconf);
         rd_kafka_anyconf_clear_all_is_modified(tconf);
 	return tconf;
@@ -2878,8 +2910,7 @@ void rd_kafka_conf_properties_show (FILE *fp) {
                 fprintf(fp, "%3s | ",
                         (!(prop->scope & _RK_PRODUCER) ==
                          !(prop->scope & _RK_CONSUMER) ? " * " :
-                         ((prop->scope & _RK_PRODUCER) ? " P " :
-                          (prop->scope & _RK_CONSUMER) ? " C " : "")));
+                         ((prop->scope & _RK_PRODUCER) ? " P " : " C ")));
 
 		switch (prop->type)
 		{
@@ -3088,6 +3119,7 @@ rd_kafka_confval_set_type (rd_kafka_confval_t *confval,
                                             confval->name);
                                 return RD_KAFKA_RESP_ERR__INVALID_TYPE;
                         }
+                        break;
                 default:
                         rd_snprintf(errstr, errstr_size,
                                     "Invalid value type for \"%s\": "
@@ -3254,6 +3286,26 @@ const char *rd_kafka_conf_finalize (rd_kafka_type_t cltype,
                 conf->eos.idempotence = 0;
 
         } else if (cltype == RD_KAFKA_PRODUCER) {
+                if (conf->eos.transactional_id) {
+                        if (!conf->eos.idempotence) {
+                                /* Auto enable idempotence unless
+                                 * explicitly disabled */
+                                if (rd_kafka_conf_is_modified(
+                                            conf, "enable.idempotence"))
+                                        return "`transactional.id` requires "
+                                                "`enable.idempotence=true`";
+
+                                conf->eos.idempotence = rd_true;
+                        }
+
+                        /* Make sure at least one request can be sent
+                         * before the transaction times out. */
+                        if (conf->eos.transaction_timeout_ms <
+                            conf->socket_timeout_ms)
+                                return "`transaction.timeout.ms` must be "
+                                        "set >= `socket.timeout.ms`";
+                }
+
                 if (conf->eos.idempotence) {
                         /* Adjust configuration values for idempotent producer*/
 
@@ -3361,6 +3413,21 @@ const char *rd_kafka_topic_conf_finalize (rd_kafka_type_t cltype,
                 } else {
                         tconf->queuing_strategy = RD_KAFKA_QUEUE_FIFO;
                 }
+
+                if (conf->eos.transactional_id) {
+                        /* Make sure at least one message can be produced
+                         * before the transaction times out. */
+                        if (conf->eos.transaction_timeout_ms - 1000 <=
+                            tconf->message_timeout_ms) {
+                                if (rd_kafka_topic_conf_is_modified(
+                                            tconf, "message.timeout.ms"))
+                                        return "`message.timeout.ms` must be "
+                                                "set < "
+                                                "`transaction.timeout.ms`-1000";
+                                tconf->message_timeout_ms =
+                                        conf->eos.transaction_timeout_ms-1000;
+                        }
+                }
         }
 
 
@@ -3448,6 +3515,26 @@ int rd_kafka_conf_warn (rd_kafka_t *rk) {
                                      rk->rk_conf.fetch_wait_max_ms,
                                      rk->rk_conf.socket_timeout_ms);
         }
+
+        if (rd_kafka_conf_is_modified(&rk->rk_conf, "sasl.mechanisms") &&
+            !(rk->rk_conf.security_protocol == RD_KAFKA_PROTO_SASL_SSL ||
+              rk->rk_conf.security_protocol == RD_KAFKA_PROTO_SASL_PLAINTEXT)) {
+                rd_kafka_log(rk, LOG_WARNING, "CONFWARN",
+                             "Configuration property `sasl.mechanism` set to "
+                             "`%s` but `security.protocol` is not configured "
+                             "for SASL: recommend setting "
+                             "`security.protocol` to SASL_SSL or "
+                             "SASL_PLAINTEXT",
+                             rk->rk_conf.sasl.mechanisms);
+        }
+
+        if (rd_kafka_conf_is_modified(&rk->rk_conf, "sasl.username") &&
+            !(!strncmp(rk->rk_conf.sasl.mechanisms, "SCRAM", 5) ||
+              !strcmp(rk->rk_conf.sasl.mechanisms, "PLAIN")))
+                rd_kafka_log(rk, LOG_WARNING, "CONFWARN",
+                             "Configuration property `sasl.username` only "
+                             "applies when `sasl.mechanism` is set to "
+                             "PLAIN or SCRAM-SHA-..");
 
         return cnt;
 }

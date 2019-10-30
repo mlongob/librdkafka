@@ -69,14 +69,8 @@ RD_TLS rd_kafka_transport_t *rd_kafka_curr_transport;
 static void rd_kafka_transport_close0 (rd_kafka_t *rk, int s) {
         if (rk->rk_conf.closesocket_cb)
                 rk->rk_conf.closesocket_cb(s, rk->rk_conf.opaque);
-        else {
-#ifndef _MSC_VER
-		close(s);
-#else
-		closesocket(s);
-#endif
-        }
-
+        else
+                rd_close(s);
 }
 
 /**
@@ -128,6 +122,7 @@ rd_kafka_transport_socket_sendmsg (rd_kafka_transport_t *rktrans,
         struct msghdr msg = { .msg_iov = iov };
         size_t iovlen;
         ssize_t r;
+        size_t r2;
 
         rd_slice_get_iov(slice, msg.msg_iov, &iovlen, IOV_MAX,
                          /* FIXME: Measure the effects of this */
@@ -149,10 +144,13 @@ rd_kafka_transport_socket_sendmsg (rd_kafka_transport_t *rktrans,
                 if (socket_errno == EAGAIN)
                         return 0;
                 rd_snprintf(errstr, errstr_size, "%s", rd_strerror(errno));
+                return -1;
         }
 
         /* Update buffer read position */
-        rd_slice_read(slice, NULL, (size_t)r);
+        r2 = rd_slice_read(slice, NULL, (size_t)r);
+        rd_assert((size_t)r == r2 &&
+                  *"BUG: wrote more bytes than available in slice");
 
         return r;
 }
@@ -172,6 +170,7 @@ rd_kafka_transport_socket_send0 (rd_kafka_transport_t *rktrans,
 
         while ((rlen = rd_slice_peeker(slice, &p))) {
                 ssize_t r;
+                size_t r2;
 
                 r = send(rktrans->rktrans_s, p,
 #ifdef _MSC_VER
@@ -202,7 +201,10 @@ rd_kafka_transport_socket_send0 (rd_kafka_transport_t *rktrans,
 #endif
 
                 /* Update buffer read position */
-                rd_slice_read(slice, NULL, (size_t)r);
+                r2 = rd_slice_read(slice, NULL, (size_t)r);
+                rd_assert((size_t)r == r2 &&
+                          *"BUG: wrote more bytes than available in slice");
+
 
                 sum += r;
 
@@ -310,13 +312,13 @@ rd_kafka_transport_socket_recv0 (rd_kafka_transport_t *rktrans,
                         int errno_save = socket_errno;
                         if (errno_save == EAGAIN
 #ifdef _MSC_VER
-                           || errno_save == WSAEWOULDBLOCK
-#endif 
-                           )
+                            || errno_save == WSAEWOULDBLOCK
+#endif
+                                )
                                 return sum;
                         else {
                                 rd_snprintf(errstr, errstr_size, "%s",
-                                    socket_strerror(errno_save));
+                                            socket_strerror(errno_save));
 #ifndef _MSC_VER
                                 errno = errno_save;
 #endif
@@ -352,9 +354,6 @@ rd_kafka_transport_socket_recv (rd_kafka_transport_t *rktrans,
                                 rd_buf_t *buf,
                                 char *errstr, size_t errstr_size) {
 #ifndef _MSC_VER
-        /* FIXME: Use recvmsg() with iovecs if there's more than one segment
-         * remaining, otherwise (or if platform does not have sendmsg)
-         * use plain send(). */
         return rd_kafka_transport_socket_recvmsg(rktrans, buf,
                                                  errstr, errstr_size);
 #endif
@@ -533,8 +532,6 @@ int rd_kafka_transport_framed_recv (rd_kafka_transport_t *rktrans,
 	return 0;
 
  err_parse:
-	if (rkbuf)
-		rd_kafka_buf_destroy(rkbuf);
         rd_snprintf(errstr, errstr_size, "Frame header parsing failed: %s",
                     rd_kafka_err2str(rkbuf->rkbuf_err));
 	return -1;
@@ -542,45 +539,36 @@ int rd_kafka_transport_framed_recv (rd_kafka_transport_t *rktrans,
 
 
 /**
- * TCP connection established.
- * Set up socket options, SSL, etc.
- *
- * Locality: broker thread
+ * @brief Final socket setup after a connection has been established
  */
-static void rd_kafka_transport_connected (rd_kafka_transport_t *rktrans) {
-	rd_kafka_broker_t *rkb = rktrans->rktrans_rkb;
+void rd_kafka_transport_post_connect_setup (rd_kafka_transport_t *rktrans) {
+        rd_kafka_broker_t *rkb = rktrans->rktrans_rkb;
         unsigned int slen;
 
-        rd_rkb_dbg(rkb, BROKER, "CONNECT",
-                   "Connected to %s",
-                   rd_sockaddr2str(rkb->rkb_addr_last,
-                                   RD_SOCKADDR2STR_F_PORT |
-                                   RD_SOCKADDR2STR_F_FAMILY));
+        /* Set socket send & receive buffer sizes if configuerd */
+        if (rkb->rkb_rk->rk_conf.socket_sndbuf_size != 0) {
+                if (setsockopt(rktrans->rktrans_s, SOL_SOCKET, SO_SNDBUF,
+                               (void *)&rkb->rkb_rk->rk_conf.socket_sndbuf_size,
+                               sizeof(rkb->rkb_rk->rk_conf.
+                                      socket_sndbuf_size)) == SOCKET_ERROR)
+                        rd_rkb_log(rkb, LOG_WARNING, "SNDBUF",
+                                   "Failed to set socket send "
+                                   "buffer size to %i: %s",
+                                   rkb->rkb_rk->rk_conf.socket_sndbuf_size,
+                                   socket_strerror(socket_errno));
+        }
 
-	/* Set socket send & receive buffer sizes if configuerd */
-	if (rkb->rkb_rk->rk_conf.socket_sndbuf_size != 0) {
-		if (setsockopt(rktrans->rktrans_s, SOL_SOCKET, SO_SNDBUF,
-			       (void *)&rkb->rkb_rk->rk_conf.socket_sndbuf_size,
-			       sizeof(rkb->rkb_rk->rk_conf.
-				      socket_sndbuf_size)) == SOCKET_ERROR)
-			rd_rkb_log(rkb, LOG_WARNING, "SNDBUF",
-				   "Failed to set socket send "
-				   "buffer size to %i: %s",
-				   rkb->rkb_rk->rk_conf.socket_sndbuf_size,
-				   socket_strerror(socket_errno));
-	}
-
-	if (rkb->rkb_rk->rk_conf.socket_rcvbuf_size != 0) {
-		if (setsockopt(rktrans->rktrans_s, SOL_SOCKET, SO_RCVBUF,
-			       (void *)&rkb->rkb_rk->rk_conf.socket_rcvbuf_size,
-			       sizeof(rkb->rkb_rk->rk_conf.
-				      socket_rcvbuf_size)) == SOCKET_ERROR)
-			rd_rkb_log(rkb, LOG_WARNING, "RCVBUF",
-				   "Failed to set socket receive "
-				   "buffer size to %i: %s",
-				   rkb->rkb_rk->rk_conf.socket_rcvbuf_size,
-				   socket_strerror(socket_errno));
-	}
+        if (rkb->rkb_rk->rk_conf.socket_rcvbuf_size != 0) {
+                if (setsockopt(rktrans->rktrans_s, SOL_SOCKET, SO_RCVBUF,
+                               (void *)&rkb->rkb_rk->rk_conf.socket_rcvbuf_size,
+                               sizeof(rkb->rkb_rk->rk_conf.
+                                      socket_rcvbuf_size)) == SOCKET_ERROR)
+                        rd_rkb_log(rkb, LOG_WARNING, "RCVBUF",
+                                   "Failed to set socket receive "
+                                   "buffer size to %i: %s",
+                                   rkb->rkb_rk->rk_conf.socket_rcvbuf_size,
+                                   socket_strerror(socket_errno));
+        }
 
         /* Get send and receive buffer sizes to allow limiting
          * the total number of bytes passed with iovecs to sendmsg()
@@ -621,7 +609,25 @@ static void rd_kafka_transport_connected (rd_kafka_transport_t *rktrans) {
                                    socket_strerror(socket_errno));
         }
 #endif
+}
 
+
+/**
+ * TCP connection established.
+ * Set up socket options, SSL, etc.
+ *
+ * Locality: broker thread
+ */
+static void rd_kafka_transport_connected (rd_kafka_transport_t *rktrans) {
+	rd_kafka_broker_t *rkb = rktrans->rktrans_rkb;
+
+        rd_rkb_dbg(rkb, BROKER, "CONNECT",
+                   "Connected to %s",
+                   rd_sockaddr2str(rkb->rkb_addr_last,
+                                   RD_SOCKADDR2STR_F_PORT |
+                                   RD_SOCKADDR2STR_F_FAMILY));
+
+        rd_kafka_transport_post_connect_setup(rktrans);
 
 #if WITH_SSL
 	if (rkb->rkb_proto == RD_KAFKA_PROTO_SSL ||
@@ -826,37 +832,21 @@ int rd_kafka_transport_io_serve (rd_kafka_transport_t *rktrans,
 
 
 /**
- * Initiate asynchronous connection attempt.
- *
- * Locality: broker thread
+ * @brief Create a new transport object using existing socket \p s.
  */
-rd_kafka_transport_t *rd_kafka_transport_connect (rd_kafka_broker_t *rkb,
-						  const rd_sockaddr_inx_t *sinx,
-						  char *errstr,
-						  size_t errstr_size) {
-	rd_kafka_transport_t *rktrans;
-	int s = -1;
-	int on = 1;
+rd_kafka_transport_t *rd_kafka_transport_new (rd_kafka_broker_t *rkb, int s,
+                                              char *errstr,
+                                              size_t errstr_size) {
+        rd_kafka_transport_t *rktrans;
+        int on = 1;
         int r;
 
-        rkb->rkb_addr_last = sinx;
-
-	s = rkb->rkb_rk->rk_conf.socket_cb(sinx->in.sin_family,
-					   SOCK_STREAM, IPPROTO_TCP,
-					   rkb->rkb_rk->rk_conf.opaque);
-	if (s == -1) {
-		rd_snprintf(errstr, errstr_size, "Failed to create socket: %s",
-			    socket_strerror(socket_errno));
-		return NULL;
-	}
-
-
 #ifdef SO_NOSIGPIPE
-	/* Disable SIGPIPE signalling for this socket on OSX */
-	if (setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on)) == -1) 
-		rd_rkb_dbg(rkb, BROKER, "SOCKET",
-			   "Failed to set SO_NOSIGPIPE: %s",
-			   socket_strerror(socket_errno));
+        /* Disable SIGPIPE signalling for this socket on OSX */
+        if (setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on)) == -1)
+                rd_rkb_dbg(rkb, BROKER, "SOCKET",
+                           "Failed to set SO_NOSIGPIPE: %s",
+                           socket_strerror(socket_errno));
 #endif
 
 #ifdef SO_KEEPALIVE
@@ -875,8 +865,45 @@ rd_kafka_transport_t *rd_kafka_transport_connect (rd_kafka_broker_t *rkb,
                 rd_snprintf(errstr, errstr_size,
                             "Failed to set socket non-blocking: %s",
                             socket_strerror(r));
-                goto err;
+                return NULL;
         }
+
+
+        rktrans = rd_calloc(1, sizeof(*rktrans));
+        rktrans->rktrans_rkb = rkb;
+        rktrans->rktrans_s = s;
+
+        return rktrans;
+}
+
+
+/**
+ * Initiate asynchronous connection attempt.
+ *
+ * Locality: broker thread
+ */
+rd_kafka_transport_t *rd_kafka_transport_connect (rd_kafka_broker_t *rkb,
+						  const rd_sockaddr_inx_t *sinx,
+						  char *errstr,
+						  size_t errstr_size) {
+	rd_kafka_transport_t *rktrans;
+	int s = -1;
+        int r;
+
+        rkb->rkb_addr_last = sinx;
+
+	s = rkb->rkb_rk->rk_conf.socket_cb(sinx->in.sin_family,
+					   SOCK_STREAM, IPPROTO_TCP,
+					   rkb->rkb_rk->rk_conf.opaque);
+	if (s == -1) {
+		rd_snprintf(errstr, errstr_size, "Failed to create socket: %s",
+			    socket_strerror(socket_errno));
+		return NULL;
+	}
+
+        rktrans = rd_kafka_transport_new(rkb, s, errstr, errstr_size);
+        if (!rktrans)
+                goto err;
 
 	rd_rkb_dbg(rkb, BROKER, "CONNECT", "Connecting to %s (%s) "
 		   "with socket %i",
@@ -918,11 +945,8 @@ rd_kafka_transport_t *rd_kafka_transport_connect (rd_kafka_broker_t *rkb,
 		goto err;
 	}
 
-	/* Create transport handle */
-	rktrans = rd_calloc(1, sizeof(*rktrans));
-	rktrans->rktrans_rkb = rkb;
-	rktrans->rktrans_s = s;
-	rktrans->rktrans_pfd[rktrans->rktrans_pfd_cnt++].fd = s;
+        /* Set up transport handle */
+        rktrans->rktrans_pfd[rktrans->rktrans_pfd_cnt++].fd = s;
         if (rkb->rkb_wakeup_fd[0] != -1) {
                 rktrans->rktrans_pfd[rktrans->rktrans_pfd_cnt].events = POLLIN;
                 rktrans->rktrans_pfd[rktrans->rktrans_pfd_cnt++].fd = rkb->rkb_wakeup_fd[0];
@@ -937,6 +961,9 @@ rd_kafka_transport_t *rd_kafka_transport_connect (rd_kafka_broker_t *rkb,
  err:
 	if (s != -1)
                 rd_kafka_transport_close0(rkb->rkb_rk, s);
+
+        if (rktrans)
+                rd_kafka_transport_close(rktrans);
 
 	return NULL;
 }
@@ -958,6 +985,7 @@ void rd_kafka_transport_poll_clear(rd_kafka_transport_t *rktrans, int event) {
  */
 int rd_kafka_transport_poll(rd_kafka_transport_t *rktrans, int tmout) {
         int r;
+
 #ifndef _MSC_VER
 	r = poll(rktrans->rktrans_pfd, rktrans->rktrans_pfd_cnt, tmout);
 	if (r <= 0)

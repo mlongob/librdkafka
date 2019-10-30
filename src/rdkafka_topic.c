@@ -543,9 +543,10 @@ static int rd_kafka_toppar_leader_update2 (rd_kafka_itopic_t *rkt,
                  * Probably caused by corrupt broker state. */
                 rd_kafka_log(rkt->rkt_rk, LOG_WARNING, "LEADER",
                              "%s [%"PRId32"] is unknown "
-                             "(partition_cnt %i)",
+                             "(partition_cnt %i): "
+                             "ignoring leader (%"PRId32") update",
                              rkt->rkt_topic->str, partition,
-                             rkt->rkt_partition_cnt);
+                             rkt->rkt_partition_cnt, leader_id);
                 return -1;
         }
 
@@ -1400,8 +1401,7 @@ int rd_kafka_topic_match (rd_kafka_t *rk, const char *pattern,
 
 
 /**
- * Trigger broker metadata query for topic leader.
- * 'rkt' may be NULL to query for all topics.
+ * @brief Trigger broker metadata query for topic leader.
  *
  * @locks none
  */
@@ -1415,8 +1415,7 @@ void rd_kafka_topic_leader_query0 (rd_kafka_t *rk, rd_kafka_itopic_t *rkt,
         rd_kafka_metadata_refresh_topics(rk, NULL, &topics,
                                          0/*dont force*/, "leader query");
 
-        if (rkt)
-                rd_list_destroy(&topics);
+        rd_list_destroy(&topics);
 }
 
 

@@ -212,6 +212,7 @@ ssize_t rd_kafka_transport_ssl_send (rd_kafka_transport_t *rktrans,
 
         while ((rlen = rd_slice_peeker(slice, &p))) {
                 int r;
+                size_t r2;
 
                 r = SSL_write(rktrans->rktrans_ssl, p, (int)rlen);
 
@@ -225,7 +226,10 @@ ssize_t rd_kafka_transport_ssl_send (rd_kafka_transport_t *rktrans,
                 }
 
                 /* Update buffer read position */
-                rd_slice_read(slice, NULL, (size_t)r);
+                r2 = rd_slice_read(slice, NULL, (size_t)r);
+                rd_assert((size_t)r == r2 &&
+                          *"BUG: wrote more bytes than available in slice");
+
 
                 sum += r;
                 /* FIXME: remove this and try again immediately and let
@@ -476,7 +480,7 @@ int rd_kafka_transport_ssl_connect (rd_kafka_broker_t *rkb,
                 goto fail;
 
         if (rd_kafka_transport_ssl_set_endpoint_id(rktrans, errstr,
-                                                   sizeof(errstr)) == -1)
+                                                   errstr_size) == -1)
                 return -1;
 
         rd_kafka_transport_ssl_clear_error(rktrans);
@@ -863,6 +867,11 @@ static int rd_kafka_ssl_set_certs (rd_kafka_t *rk, SSL_CTX *ctx,
 
                 rd_assert(rk->rk_conf.ssl.key->pkey);
                 r = SSL_CTX_use_PrivateKey(ctx, rk->rk_conf.ssl.key->pkey);
+                if (r != 1) {
+                        rd_snprintf(errstr, errstr_size,
+                                    "ssl_key (in-memory) failed: ");
+                        return -1;
+                }
 
                 check_pkey = rd_true;
         }

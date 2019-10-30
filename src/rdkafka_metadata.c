@@ -247,6 +247,7 @@ rd_kafka_parse_Metadata (rd_kafka_broker_t *rkb,
                        0/*dont assert on fail*/);
 
         if (!(md = rd_tmpabuf_alloc(&tbuf, sizeof(*md)))) {
+                rd_kafka_broker_unlock(rkb);
                 err = RD_KAFKA_RESP_ERR__CRIT_SYS_RESOURCE;
                 goto err;
         }
@@ -444,7 +445,7 @@ rd_kafka_parse_Metadata (rd_kafka_broker_t *rkb,
                            md->brokers[i].port,
                            md->brokers[i].id);
                 rd_kafka_broker_update(rkb->rkb_rk, rkb->rkb_proto,
-                                       &md->brokers[i]);
+                                       &md->brokers[i], NULL);
         }
 
         /* Update partition count and leader for each topic we know about */
@@ -592,7 +593,8 @@ rd_kafka_parse_Metadata (rd_kafka_broker_t *rkb,
         /* Try to acquire a Producer ID from this broker if we
          * don't have one. */
         if (rd_kafka_is_idempotent(rkb->rkb_rk))
-                rd_kafka_idemp_request_pid(rkb->rkb_rk, rkb, "metadata update");
+                rd_kafka_idemp_request_pid(rkb->rkb_rk, rkb,
+                                           "metadata update");
 
 done:
         if (missing_topics)
@@ -1050,7 +1052,8 @@ void rd_kafka_metadata_fast_leader_query (rd_kafka_t *rk) {
                                    &rk->rk_metadata_cache.rkmc_query_tmr,
                                    1/*lock*/);
         if (next == -1 /* not started */ ||
-            next > rk->rk_conf.metadata_refresh_fast_interval_ms*1000) {
+            next >
+            (rd_ts_t)rk->rk_conf.metadata_refresh_fast_interval_ms * 1000) {
                 rd_kafka_dbg(rk, METADATA|RD_KAFKA_DBG_TOPIC, "FASTQUERY",
                              "Starting fast leader query");
                 rd_kafka_timer_start(&rk->rk_timers,

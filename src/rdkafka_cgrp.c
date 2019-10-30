@@ -387,24 +387,27 @@ static int rd_kafka_cgrp_coord_update (rd_kafka_cgrp_t *rkcg,
 
 
 /**
- * Handle GroupCoordinator response
+ * Handle FindCoordinator response
  */
-static void rd_kafka_cgrp_handle_GroupCoordinator (rd_kafka_t *rk,
-						   rd_kafka_broker_t *rkb,
-                                                   rd_kafka_resp_err_t err,
-                                                   rd_kafka_buf_t *rkbuf,
-                                                   rd_kafka_buf_t *request,
-                                                   void *opaque) {
+static void rd_kafka_cgrp_handle_FindCoordinator (rd_kafka_t *rk,
+                                                  rd_kafka_broker_t *rkb,
+                                                  rd_kafka_resp_err_t err,
+                                                  rd_kafka_buf_t *rkbuf,
+                                                  rd_kafka_buf_t *request,
+                                                  void *opaque) {
         const int log_decode_errors = LOG_ERR;
         int16_t ErrorCode = 0;
         int32_t CoordId;
         rd_kafkap_str_t CoordHost = RD_ZERO_INIT;
         int32_t CoordPort;
+        rd_kafkap_str_t ErrorMsg = RD_ZERO_INIT;
         rd_kafka_cgrp_t *rkcg = opaque;
         struct rd_kafka_metadata_broker mdb = RD_ZERO_INIT;
 
         if (likely(!(ErrorCode = err))) {
                 rd_kafka_buf_read_i16(rkbuf, &ErrorCode);
+                if (request->rkbuf_reqhdr.ApiVersion == 1)
+                        rd_kafka_buf_read_str(rkbuf, &ErrorMsg);
                 rd_kafka_buf_read_i32(rkbuf, &CoordId);
                 rd_kafka_buf_read_str(rkbuf, &CoordHost);
                 rd_kafka_buf_read_i32(rkbuf, &CoordPort);
@@ -422,7 +425,7 @@ static void rd_kafka_cgrp_handle_GroupCoordinator (rd_kafka_t *rk,
                    "Group \"%.*s\" coordinator is %s:%i id %"PRId32,
                    RD_KAFKAP_STR_PR(rkcg->rkcg_group_id),
                    mdb.host, mdb.port, mdb.id);
-        rd_kafka_broker_update(rkb->rkb_rk, rkb->rkb_proto, &mdb);
+        rd_kafka_broker_update(rkb->rkb_rk, rkb->rkb_proto, &mdb, NULL);
 
         rd_kafka_cgrp_coord_update(rkcg, CoordId);
         rd_kafka_cgrp_serve(rkcg); /* Serve updated state, if possible */
@@ -434,9 +437,11 @@ err_parse: /* Parse error */
 
 err2:
         rd_rkb_dbg(rkb, CGRP, "CGRPCOORD",
-                   "Group \"%.*s\" GroupCoordinator response error: %s",
+                   "Group \"%.*s\" FindCoordinator response error: %s%s%.*s",
                    RD_KAFKAP_STR_PR(rkcg->rkcg_group_id),
-                   rd_kafka_err2str(ErrorCode));
+                   rd_kafka_err2str(ErrorCode),
+                   RD_KAFKAP_STR_LEN(&ErrorMsg) > 0 ? ": " : "",
+                   RD_KAFKAP_STR_PR(&ErrorMsg));
 
         if (ErrorCode == RD_KAFKA_RESP_ERR__DESTROY)
                 return;
@@ -450,7 +455,7 @@ err2:
                         rd_kafka_q_op_err(rkcg->rkcg_q,
                                           RD_KAFKA_OP_CONSUMER_ERR,
                                           ErrorCode, 0, NULL, 0,
-                                          "GroupCoordinator response error: %s",
+                                          "FindCoordinator response error: %s",
                                           rd_kafka_err2str(ErrorCode));
 
                         /* Suppress repeated errors */
@@ -476,8 +481,8 @@ void rd_kafka_cgrp_coord_query (rd_kafka_cgrp_t *rkcg,
 	rd_kafka_broker_t *rkb;
 
 	rd_kafka_rdlock(rkcg->rkcg_rk);
-	rkb = rd_kafka_broker_any(rkcg->rkcg_rk, RD_KAFKA_BROKER_STATE_UP,
-				  rd_kafka_broker_filter_can_group_query, NULL,
+        rkb = rd_kafka_broker_any(rkcg->rkcg_rk, RD_KAFKA_BROKER_STATE_UP,
+                                  rd_kafka_broker_filter_can_coord_query, NULL,
                                   "coordinator query");
 	rd_kafka_rdunlock(rkcg->rkcg_rk);
 
@@ -493,10 +498,14 @@ void rd_kafka_cgrp_coord_query (rd_kafka_cgrp_t *rkcg,
                    "Group \"%.*s\": querying for coordinator: %s",
                    RD_KAFKAP_STR_PR(rkcg->rkcg_group_id), reason);
 
-        rd_kafka_GroupCoordinatorRequest(rkb, rkcg->rkcg_group_id,
-                                         RD_KAFKA_REPLYQ(rkcg->rkcg_ops, 0),
-                                         rd_kafka_cgrp_handle_GroupCoordinator,
-                                         rkcg);
+        /* FIXME: retval */
+        rd_kafka_FindCoordinatorRequest(rkb,
+                                        RD_KAFKA_COORD_GROUP,
+                                        rkcg->rkcg_group_id->str,
+                                        NULL, 0,
+                                        RD_KAFKA_REPLYQ(rkcg->rkcg_ops, 0),
+                                        rd_kafka_cgrp_handle_FindCoordinator,
+                                        rkcg);
 
         if (rkcg->rkcg_state == RD_KAFKA_CGRP_STATE_QUERY_COORD)
                 rd_kafka_cgrp_set_state(rkcg, RD_KAFKA_CGRP_STATE_WAIT_COORD);
@@ -722,7 +731,7 @@ rd_kafka_cgrp_assignor_run (rd_kafka_cgrp_t *rkcg,
                                   rkcg->rkcg_group_id,
                                   rkcg->rkcg_generation_id,
                                   rkcg->rkcg_member_id,
-                                  members, err ? 0 : member_cnt,
+                                  members, member_cnt,
                                   RD_KAFKA_REPLYQ(rkcg->rkcg_ops, 0),
                                   rd_kafka_handle_SyncGroup, rkcg);
         return;
@@ -1991,26 +2000,28 @@ static void rd_kafka_cgrp_op_handle_OffsetCommit (rd_kafka_t *rk,
         errcnt = rd_kafka_cgrp_handle_OffsetCommit(rkcg, err, offsets);
 
         if (!offset_commit_cb_served &&
-            err != RD_KAFKA_RESP_ERR_NO_ERROR &&
-            err != RD_KAFKA_RESP_ERR__NO_OFFSET) {
+            (errcnt > 0 ||
+             (err != RD_KAFKA_RESP_ERR_NO_ERROR &&
+              err != RD_KAFKA_RESP_ERR__NO_OFFSET))) {
                 /* If there is no callback or handler for this (auto)
                  * commit then raise an error to the application (#1043) */
                 char tmp[512];
 
                 rd_kafka_topic_partition_list_str(
                         offsets, tmp, sizeof(tmp),
-                        /*no partition-errs if a global error*/
+                        /* Print per-partition errors unless there was a
+                         * request-level error. */
                         RD_KAFKA_FMT_F_OFFSET |
-                        (err ? 0 : RD_KAFKA_FMT_F_ONLY_ERR));
+                        (errcnt ? RD_KAFKA_FMT_F_ONLY_ERR : 0));
 
                 rd_kafka_log(rkcg->rkcg_rk, LOG_WARNING, "COMMITFAIL",
                              "Offset commit (%s) failed "
                              "for %d/%d partition(s): "
                              "%s%s%s",
                              rko_orig->rko_u.offset_commit.reason,
-                             err ? offsets->cnt : errcnt, offsets->cnt,
-                             err ? rd_kafka_err2str(err) : "",
-                             err ? ": " : "",
+                             errcnt ? offsets->cnt : errcnt, offsets->cnt,
+                             errcnt ? rd_kafka_err2str(err) : "",
+                             errcnt ? ": " : "",
                              tmp);
         }
 
@@ -3149,7 +3160,7 @@ void rd_kafka_cgrp_serve (rd_kafka_cgrp_t *rkcg) {
                 break;
 
         case RD_KAFKA_CGRP_STATE_WAIT_COORD:
-                /* Waiting for GroupCoordinator response */
+                /* Waiting for FindCoordinator response */
                 break;
 
         case RD_KAFKA_CGRP_STATE_WAIT_BROKER:
@@ -3325,7 +3336,7 @@ void rd_kafka_cgrp_handle_SyncGroup (rd_kafka_cgrp_t *rkcg,
                                      rd_kafka_resp_err_t err,
                                      const rd_kafkap_bytes_t *member_state) {
         rd_kafka_buf_t *rkbuf = NULL;
-        rd_kafka_topic_partition_list_t *assignment;
+        rd_kafka_topic_partition_list_t *assignment = NULL;
         const int log_decode_errors = LOG_ERR;
         int16_t Version;
         int32_t TopicCnt;
@@ -3401,6 +3412,9 @@ void rd_kafka_cgrp_handle_SyncGroup (rd_kafka_cgrp_t *rkcg,
  err:
         if (rkbuf)
                 rd_kafka_buf_destroy(rkbuf);
+
+        if (assignment)
+                rd_kafka_topic_partition_list_destroy(assignment);
 
         rd_kafka_dbg(rkcg->rkcg_rk, CGRP, "GRPSYNC",
                      "Group \"%s\": synchronization failed: %s: rejoining",

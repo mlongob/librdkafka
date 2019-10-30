@@ -60,7 +60,7 @@ struct rd_kafkap_reqhdr {
 #define RD_KAFKAP_ControlledShutdown 7
 #define RD_KAFKAP_OffsetCommit  8
 #define RD_KAFKAP_OffsetFetch   9
-#define RD_KAFKAP_GroupCoordinator 10
+#define RD_KAFKAP_FindCoordinator 10
 #define RD_KAFKAP_JoinGroup     11
 #define RD_KAFKAP_Heartbeat     12
 #define RD_KAFKAP_LeaveGroup    13
@@ -125,7 +125,7 @@ const char *rd_kafka_ApiKey2str (int16_t ApiKey) {
                 [RD_KAFKAP_ControlledShutdown] = "ControlledShutdown",
                 [RD_KAFKAP_OffsetCommit] = "OffsetCommit",
                 [RD_KAFKAP_OffsetFetch] = "OffsetFetch",
-                [RD_KAFKAP_GroupCoordinator] = "GroupCoordinator",
+                [RD_KAFKAP_FindCoordinator] = "FindCoordinator",
                 [RD_KAFKAP_JoinGroup] = "JoinGroup",
                 [RD_KAFKAP_Heartbeat] = "Heartbeat",
                 [RD_KAFKAP_LeaveGroup] = "LeaveGroup",
@@ -210,6 +210,14 @@ typedef enum {
 
 
 /**
+ * @enum Coordinator type, used with FindCoordinatorRequest
+ */
+typedef enum rd_kafka_coordtype_t {
+        RD_KAFKA_COORD_GROUP = 0,
+        RD_KAFKA_COORD_TXN = 1
+} rd_kafka_coordtype_t;
+
+/**
  *
  * Kafka protocol string representation prefixed with a convenience header
  *
@@ -237,7 +245,12 @@ typedef struct rd_kafkap_str_s {
 #define RD_KAFKAP_STR_SIZE(kstr) RD_KAFKAP_STR_SIZE0((kstr)->len)
 
 
-/* Serialized Kafka string: only works for _new() kstrs */
+/** @returns true if kstr is pre-serialized through .._new() */
+#define RD_KAFKAP_STR_IS_SERIALIZED(kstr)                               \
+        ((const void *)((kstr)+1) == (const void *)((kstr)->str))
+
+/* Serialized Kafka string: only works for _new() kstrs.
+ * Check with RD_KAFKAP_STR_IS_SERIALIZED */
 #define RD_KAFKAP_STR_SER(kstr)  ((kstr)+1)
 
 /* Macro suitable for "%.*s" printing. */
@@ -278,7 +291,7 @@ rd_kafkap_str_t *rd_kafkap_str_new (const char *str, int len) {
 	if (!str)
 		len = RD_KAFKAP_STR_LEN_NULL;
 	else if (len == -1)
-		len = str ? (int)strlen(str) : RD_KAFKAP_STR_LEN_NULL;
+		len = (int)strlen(str);
 
 	kstr = rd_malloc(sizeof(*kstr) + 2 +
 			 (len == RD_KAFKAP_STR_LEN_NULL ? 0 : len + 1));

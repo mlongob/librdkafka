@@ -148,7 +148,7 @@ typedef SSIZE_T ssize_t;
  * @remark This value should only be used during compile time,
  *         for runtime checks of version use rd_kafka_version()
  */
-#define RD_KAFKA_VERSION  0x010200ff
+#define RD_KAFKA_VERSION  0x010201ff
 
 /**
  * @brief Returns the librdkafka version as integer.
@@ -223,7 +223,7 @@ const char *rd_kafka_get_debug_contexts(void);
  *             Use rd_kafka_get_debug_contexts() instead.
  */
 #define RD_KAFKA_DEBUG_CONTEXTS \
-        "all,generic,broker,topic,metadata,feature,queue,msg,protocol,cgrp,security,fetch,interceptor,plugin,consumer,admin,eos"
+        "all,generic,broker,topic,metadata,feature,queue,msg,protocol,cgrp,security,fetch,interceptor,plugin,consumer,admin,eos,mock"
 
 
 /* @cond NO_DOC */
@@ -272,7 +272,7 @@ typedef enum {
 	/** Produced message timed out*/
 	RD_KAFKA_RESP_ERR__MSG_TIMED_OUT = -192,
 	/** Reached the end of the topic+partition queue on
-	 * the broker. Not really an error. 
+	 * the broker. Not really an error.
 	 * This event is disabled by default,
 	 * see the `enable.partition.eof` configuration property. */
 	RD_KAFKA_RESP_ERR__PARTITION_EOF = -191,
@@ -364,6 +364,12 @@ typedef enum {
         RD_KAFKA_RESP_ERR__GAPLESS_GUARANTEE = -148,
         /** Maximum poll interval exceeded */
         RD_KAFKA_RESP_ERR__MAX_POLL_EXCEEDED = -147,
+        /** Unknown broker */
+        RD_KAFKA_RESP_ERR__UNKNOWN_BROKER = -146,
+        /** Functionality not configured */
+        RD_KAFKA_RESP_ERR__NOT_CONFIGURED = -145,
+        /** Instance has been fenced */
+        RD_KAFKA_RESP_ERR__FENCED = -144,
 
 	/** End internal error codes */
 	RD_KAFKA_RESP_ERR__END = -100,
@@ -399,12 +405,18 @@ typedef enum {
 	RD_KAFKA_RESP_ERR_OFFSET_METADATA_TOO_LARGE = 12,
 	/** Broker disconnected before response received */
 	RD_KAFKA_RESP_ERR_NETWORK_EXCEPTION = 13,
-	/** Group coordinator load in progress */
-        RD_KAFKA_RESP_ERR_GROUP_LOAD_IN_PROGRESS = 14,
-	 /** Group coordinator not available */
-        RD_KAFKA_RESP_ERR_GROUP_COORDINATOR_NOT_AVAILABLE = 15,
-	/** Not coordinator for group */
-        RD_KAFKA_RESP_ERR_NOT_COORDINATOR_FOR_GROUP = 16,
+	/** Coordinator load in progress */
+        RD_KAFKA_RESP_ERR_COORDINATOR_LOAD_IN_PROGRESS = 14,
+        /** Group load in progress */
+#define RD_KAFKA_RESP_ERR_GROUP_LOAD_IN_PROGRESS  RD_KAFKA_RESP_ERR_COORDINATOR_LOAD_IN_PROGRESS
+	 /** Coordinator not available */
+        RD_KAFKA_RESP_ERR_COORDINATOR_NOT_AVAILABLE = 15,
+        /** Group coordinator not available */
+#define RD_KAFKA_RESP_ERR_GROUP_COORDINATOR_NOT_AVAILABLE RD_KAFKA_RESP_ERR_COORDINATOR_NOT_AVAILABLE
+	/** Not coordinator */
+        RD_KAFKA_RESP_ERR_NOT_COORDINATOR = 16,
+        /** Not coordinator for group */
+#define RD_KAFKA_RESP_ERR_NOT_COORDINATOR_FOR_GROUP RD_KAFKA_RESP_ERR_NOT_COORDINATOR
 	/** Invalid topic */
         RD_KAFKA_RESP_ERR_TOPIC_EXCEPTION = 17,
 	/** Message batch larger than configured server segment size */
@@ -3681,6 +3693,8 @@ rd_kafka_position (rd_kafka_t *rk,
  *               (RD_KAFKA_RESP_ERR__UNKNOWN_TOPIC)
  *  - ECANCELED - fatal error has been raised on producer, see
  *                rd_kafka_fatal_error().
+ *  - ENOEXEC  - transactional state forbids producing
+ *               (RD_KAFKA_RESP_ERR__STATE)
  *
  * @sa Use rd_kafka_errno2err() to convert `errno` to rdkafka error code.
  */
@@ -6338,6 +6352,105 @@ RD_EXPORT
 rd_kafka_resp_err_t
 rd_kafka_oauthbearer_set_token_failure (rd_kafka_t *rk, const char *errstr);
 
+/**@}*/
+
+/**
+ * @name Transactional producer API
+ * @{
+ *
+ */
+
+
+/**
+ * @brief Initialize transactions for the producer instance.
+ *
+ * Needs to be called before any other methods when the \c transactional.id
+ * is configured.
+ *
+ * This function ensures any transactions initiated by previous instances
+ * of the producer with the same \c transactional.id are completed.
+ * If the previous instance failed with a transaction in progress the
+ * previous transaction will be aborted.
+ *
+ * If the last transaction had begun completion (following transaction commit)
+ * but not yet finished, this function will await the previous transaction's
+ * completion.
+ *
+ * When any previous transactions have been fenced this function
+ * will acquire the internal producer id and epoch, used in all future
+ * transactional messages issued by this producer instance.
+ *
+ * Upon successful return from this function the application has to perform at
+ * least one of the following operations within \c transactional.timeout.ms to
+ * avoid timing out the transaction on the broker:
+ *   * rd_kafka_produce() (et.al)
+ *   * rd_kafka_send_offsets_to_transaction()
+ *   * rd_kafka_commit_transaction()
+ *   * rd_kafka_abort_transaction()
+ *
+ * @param rk Producer instance.
+ * @param timeout_ms The maximum time to block. On timeout the operation
+ *                   may continue in the background, depending on state,
+ *                   and it is okay to call init_transactions() again.
+ * @param errstr A human readable error string (nul-terminated) is written to
+ *               this location that must be of at least \p errstr_size bytes.
+ *               The \p errstr is only written to if there is a fatal error.
+ * @param errstr_size Writable size in \p errstr.
+ *
+ * @remark This function may block up to \p timeout_ms milliseconds.
+ *
+ * @returns RD_KAFKA_RESP_ERR_NO_ERROR on success,
+ *          RD_KAFKA_RESP_ERR__TIMED_OUT if the transaction coordinator
+ *          could be not be contacted within \p timeout_ms (retryable),
+ *          RD_KAFKA_RESP_ERR_COORDINATOR_NOT_AVAILABLE if the transaction
+ *          coordinator is not available (retryable),
+ *          RD_KAFKA_RESP_ERR_CONCURRENT_TRANSACTIONS if a previous transaction
+ *          would not complete within \p timeout_ms (retryable),
+ *          RD_KAFKA_RESP_ERR__STATE if transactions have already been started
+ *          or upon fatal error,
+ *          RD_KAFKA_RESP_ERR__NOT_CONFIGURED if transactions have not been
+ *          configured for the producer instance,
+ *          RD_KAFKA_RESP_ERR__INVALID_ARG if \p rk is not a producer instance,
+ *          or \p timeout_ms is out of range.
+ */
+RD_EXPORT
+rd_kafka_resp_err_t
+rd_kafka_init_transactions (rd_kafka_t *rk, int timeout_ms,
+                            char *errstr, size_t errstr_size);
+
+RD_EXPORT
+rd_kafka_resp_err_t rd_kafka_begin_transaction (rd_kafka_t *rk,
+                                                char *errstr,
+                                                size_t errstr_size);
+
+RD_EXPORT
+rd_kafka_resp_err_t
+rd_kafka_send_offsets_to_transaction (
+        rd_kafka_t *rk,
+        const rd_kafka_topic_partition_list_t *offsets,
+        const char *consumer_group_id,
+        char *errstr, size_t errstr_size);
+
+/**
+ * @brief ..
+ *
+ *
+ * @remark Will automatically call rd_kafka_flush() to ensure all queued
+ *         messages are delivered before attempting to commit the
+ *         transaction.
+ */
+rd_kafka_resp_err_t
+rd_kafka_commit_transaction (rd_kafka_t *rk,
+                             char *errstr, size_t errstr_size);
+/**
+ *
+ * @remark Will automatically call rd_kafka_purge() to ensure all queued
+ *         messages fail (with error code RD_KAFKA_RESP_ERR__PURGE_QUEUE or
+ *         RD_KAFKA_RESP_ERR__PURGE_INFLIGHT).
+ */
+rd_kafka_resp_err_t
+rd_kafka_abort_transaction (rd_kafka_t *rk,
+                            char *errstr, size_t errstr_size);
 /**@}*/
 
 /* @cond NO_DOC */

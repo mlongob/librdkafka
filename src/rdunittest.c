@@ -47,9 +47,10 @@
 #include "rdsysqueue.h"
 #include "rdkafka_sasl_oauthbearer.h"
 #include "rdkafka_msgset.h"
+#include "rdkafka_txnmgr.h"
 
-
-int rd_unittest_assert_on_failure = 0;
+rd_bool_t rd_unittest_assert_on_failure = rd_false;
+rd_bool_t rd_unittest_on_ci = rd_false;
 
 
 /**
@@ -412,17 +413,26 @@ int rd_unittest (void) {
                 { "sasl_oauthbearer", unittest_sasl_oauthbearer },
 #endif
                 { "aborted_txns", unittest_aborted_txns },
+                { "txnmgr", unittest_txnmgr },
                 { NULL }
         };
         int i;
+        const char *match = rd_getenv("RD_UT_TEST", NULL);
 
-#ifndef _MSC_VER
-        if (getenv("RD_UT_ASSERT"))
-                rd_unittest_assert_on_failure = 1;
-#endif
+        if (rd_getenv("RD_UT_ASSERT", NULL))
+                rd_unittest_assert_on_failure = rd_true;
+        if (rd_getenv("CI", NULL)) {
+                RD_UT_SAY("Unittests running on CI");
+                rd_unittest_on_ci = rd_true;
+        }
 
         for (i = 0 ; unittests[i].name ; i++) {
-                int f = unittests[i].call();
+                int f;
+
+                if (match && strcmp(match, unittests[i].name))
+                        continue;
+
+                f = unittests[i].call();
                 RD_UT_SAY("unittest: %s: %4s\033[0m",
                           unittests[i].name,
                           f ? "\033[31mFAIL" : "\033[32mPASS");
